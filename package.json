@@ -1,0 +1,46 @@
+{
+  "name": "codex-limit",
+  "version": "0.1.0",
+  "description": "Pi extension: 在页脚显示 Codex 订阅剩余额度与重置时间。",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "codex",
+    "quota",
+    "hud"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xiasheng32/codex-limit.git"
+  },
+  "homepage": "https://github.com/xiasheng32/codex-limit#readme",
+  "bugs": {
+    "url": "https://github.com/xiasheng32/codex-limit/issues"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "files": [
+    "extensions/codex-limit.ts",
+    "src/quota.ts",
+    "scripts/sync-autoload.mjs",
+    "tests/codex-limit.test.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/codex-limit.ts"
+    ]
+  },
+  "scripts": {
+    "test": "node --test tests/codex-limit.test.mjs",
+    "sync-autoload": "node scripts/sync-autoload.mjs"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  }
+}
