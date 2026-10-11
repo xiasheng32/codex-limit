@@ -5,16 +5,28 @@ import {
 	QuotaController, resetRemaining, statusLine, THROTTLE_MS, TIMEOUT_MS, windowLabel,
 	RESET_CREDITS_URL, CONSUME_RESET_URL, parseResetCredits, parseConsumeResult, quotaBar, isLowQuota,
 } from "../src/quota.ts";
+import type {
+	ControllerOptions, ProviderAuth, QuotaSnapshot, QuotaState, QuotaWindow,
+	ResetCredit, ResetCreditsSnapshot, ResetCreditsState, ResetCreditUI,
+} from "../src/quota.ts";
 
 // Tripwire: tests must never fall through to a real account/network request.
 globalThis.fetch = async () => { throw new Error("Unexpected live fetch in offline test"); };
 const NOW = Date.UTC(2026, 9, 7, 12, 0, 0);
-const tick = () => new Promise((resolve) => setImmediate(resolve));
-function deferred() {
-	let resolve;
-	const promise = new Promise((done) => { resolve = done; });
+const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+function deferred<T = void>() {
+	let resolve!: (value: T | PromiseLike<T>) => void;
+	const promise = new Promise<T>((done) => { resolve = done; });
 	return { promise, resolve };
 }
+function present<T>(value: T | null | undefined): T {
+	assert.ok(value != null, "Expected test data to be present");
+	return value;
+}
+const quotaSnapshot = (state: QuotaState): QuotaSnapshot => present(state.snapshot);
+const resetCredits = (state: QuotaState): ResetCreditsState => present(state.resetCredits);
+const resetSnapshot = (state: QuotaState): ResetCreditsSnapshot => present(resetCredits(state).snapshot);
+const resetCards = (state: QuotaState): ResetCredit[] => present(resetSnapshot(state).credits);
 function token(accountId = "synthetic-account-A") {
 	return [
 		Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url"),
@@ -22,8 +34,41 @@ function token(accountId = "synthetic-account-A") {
 		"synthetic-signature",
 	].join(".");
 }
-const oauth = (id) => ({ source: "OAuth", auth: { apiKey: token(id) } });
-function payload() {
+const oauth = (id?: string): ProviderAuth => ({ source: "OAuth", auth: { apiKey: token(id) } });
+
+// Wire fixtures deliberately include absent/invalid fields; they are not parsed snapshots.
+interface WindowFixture {
+	used_percent: number;
+	limit_window_seconds?: number;
+	reset_at?: number | string;
+	reset_after_seconds?: number;
+}
+interface UsageFixture {
+	plan_type?: string;
+	rate_limit: {
+		allowed: boolean;
+		limit_reached: boolean;
+		primary_window: WindowFixture;
+		secondary_window: WindowFixture;
+	};
+	rate_limit_reset_credits?: { available_count: number };
+}
+interface CreditFixture {
+	id?: string;
+	reset_type?: string;
+	status: string;
+	granted_at?: string;
+	expires_at?: string | null;
+	redeemed_at?: string;
+	title?: string;
+	description?: string;
+}
+interface ResetFixture {
+	available_count: number;
+	total_earned_count: number;
+	credits: CreditFixture[];
+}
+function payload(): UsageFixture {
 	return {
 		plan_type: "plus",
 		rate_limit: {
@@ -33,7 +78,7 @@ function payload() {
 		},
 	};
 }
-function resetPayload() {
+function resetPayload(): ResetFixture {
 	return {
 		available_count: 2, total_earned_count: 4,
 		credits: [
@@ -44,23 +89,56 @@ function resetPayload() {
 		],
 	};
 }
-function ready(snapshot) {
+function ready(snapshot: QuotaSnapshot): QuotaState & { snapshot: QuotaSnapshot } {
 	return { phase: "ready", snapshot, lastAttemptAt: NOW, lastSuccessAt: NOW, stale: false, retryAt: null, error: null };
 }
-function harness({ auth = async () => oauth(), transport = async () => Response.json(payload()), resetTransport = async () => Response.json(resetPayload()), consumeTransport = async () => Response.json({ code: "reset", windows_reset: 2 }), offline = false, timeoutSignal } = {}) {
+
+type RecordedInit = RequestInit & { headers: Record<string, string>; signal: AbortSignal };
+interface RecordedRequest {
+	url: Parameters<typeof globalThis.fetch>[0];
+	init: RecordedInit;
+}
+interface ConsumeRequest extends RecordedRequest {
+	init: RecordedInit & { body: string };
+}
+interface HarnessOptions {
+	auth?: ControllerOptions["resolveAuth"];
+	transport?: typeof globalThis.fetch;
+	resetTransport?: typeof globalThis.fetch;
+	consumeTransport?: typeof globalThis.fetch;
+	offline?: boolean;
+	timeoutSignal?: ControllerOptions["timeoutSignal"];
+}
+function assertRecordedInit(init: RequestInit | undefined): asserts init is RecordedInit {
+	assert.ok(init?.signal instanceof AbortSignal);
+	assert.ok(init.headers && !Array.isArray(init.headers) && !(init.headers instanceof Headers));
+	assert.ok(Object.values(init.headers).every((value) => typeof value === "string"));
+}
+function assertConsumeInit(init: RecordedInit): asserts init is ConsumeRequest["init"] {
+	assert.ok(typeof init.body === "string");
+}
+function consumeBody(request: ConsumeRequest): { credit_id: string; redeem_request_id: string } {
+	const body: unknown = JSON.parse(request.init.body);
+	assert.ok(body && typeof body === "object"
+		&& "credit_id" in body && typeof body.credit_id === "string"
+		&& "redeem_request_id" in body && typeof body.redeem_request_id === "string");
+	return { credit_id: body.credit_id, redeem_request_id: body.redeem_request_id };
+}
+function harness({ auth = async () => oauth(), transport = async () => Response.json(payload()), resetTransport = async () => Response.json(resetPayload()), consumeTransport = async () => Response.json({ code: "reset", windows_reset: 2 }), offline = false, timeoutSignal }: HarnessOptions = {}) {
 	let time = NOW;
 	let authCalls = 0;
-	const requests = [];
-	const resetRequests = [];
-	const consumeRequests = [];
-	const allRequests = [];
-	const changes = [];
+	const requests: RecordedRequest[] = [];
+	const resetRequests: RecordedRequest[] = [];
+	const consumeRequests: ConsumeRequest[] = [];
+	const allRequests: RecordedRequest[] = [];
+	const changes: QuotaState[] = [];
 	const controller = new QuotaController({
 		now: () => time,
 		resolveAuth: async () => { authCalls++; return auth(); },
 		fetch: async (url, init) => {
+			assertRecordedInit(init);
 			allRequests.push({ url, init });
-			if (url === CONSUME_RESET_URL) { consumeRequests.push({ url, init }); return consumeTransport(url, init); }
+			if (url === CONSUME_RESET_URL) { assertConsumeInit(init); consumeRequests.push({ url, init }); return consumeTransport(url, init); }
 			if (url === RESET_CREDITS_URL) { resetRequests.push({ url, init }); return resetTransport(url, init); }
 			requests.push({ url, init }); return transport(url, init);
 		},
@@ -69,19 +147,29 @@ function harness({ auth = async () => oauth(), transport = async () => Response.
 	});
 	return {
 		controller, requests, resetRequests, consumeRequests, allRequests, changes,
-		advance: (milliseconds) => { time += milliseconds; },
+		advance: (milliseconds: number) => { time += milliseconds; },
 		get now() { return time; },
 		get authCalls() { return authCalls; },
 	};
 }
-function assertSanitized(state, ...secrets) {
+function assertSanitized(state: QuotaState, ...secrets: string[]) {
 	const output = JSON.stringify(state) + detailLines(state, NOW).join("\n") + statusLine(state, NOW).text;
 	for (const secret of secrets) assert.ok(!output.includes(secret), "State and UI must not contain authentication/provider secrets");
 }
 
-function resetUI({ pick = true, choice = 0, confirm = true, onSelect } = {}) {
-	const dialogs = [];
-	const notices = [];
+interface ResetUIOptions {
+	pick?: boolean;
+	choice?: number;
+	confirm?: boolean;
+	onSelect?: (count: number, options: string[]) => Promise<void>;
+}
+interface RecordedUI extends ResetCreditUI {
+	dialogs: { title: string; options: string[] }[];
+	notices: { message: string; type: "info" | "warning" }[];
+}
+function resetUI({ pick = true, choice = 0, confirm = true, onSelect }: ResetUIOptions = {}): RecordedUI {
+	const dialogs: RecordedUI["dialogs"] = [];
+	const notices: RecordedUI["notices"] = [];
 	return {
 		dialogs, notices,
 		select: async (title, options) => {
@@ -93,8 +181,8 @@ function resetUI({ pick = true, choice = 0, confirm = true, onSelect } = {}) {
 	};
 }
 
-function assertResetSanitized(h, ui) {
-	const id = h.consumeRequests.length ? JSON.parse(h.consumeRequests[0].init.body).redeem_request_id : "unused-request-id";
+function assertResetSanitized(h: ReturnType<typeof harness>, ui: RecordedUI) {
+	const id = h.consumeRequests.length ? consumeBody(h.consumeRequests[0]).redeem_request_id : "unused-request-id";
 	const secrets = [token(), "synthetic-account-A", "synthetic-credit-secret", id, "synthetic-body-secret"];
 	assertSanitized(h.controller.getState(), ...secrets);
 	for (const state of h.changes) assertSanitized(state, ...secrets);
@@ -109,9 +197,9 @@ test("reset cards parse known metadata and discard all account/credit secrets", 
 	const cards = parseResetCredits(data, NOW);
 	assert.equal(cards.availableCount, 2);
 	assert.equal(cards.totalEarnedCount, 4);
-	assert.deepEqual(cards.credits.map((card) => card.status), ["available", "available", "used", "expired"]);
-	assert.equal(cards.credits[0].expiresAt, Date.parse("2026-10-22T21:00:00Z"));
-	assert.equal(cards.credits[2].redeemedAt, Date.parse("2026-10-01T12:00:00Z"));
+	assert.deepEqual(present(cards.credits).map((card) => card.status), ["available", "available", "used", "expired"]);
+	assert.equal(present(cards.credits)[0].expiresAt, Date.parse("2026-10-22T21:00:00Z"));
+	assert.equal(present(cards.credits)[2].redeemedAt, Date.parse("2026-10-01T12:00:00Z"));
 	const state = { ...ready(parseQuota(payload(), NOW)), resetCredits: { snapshot: cards, stale: false, error: null, retryAt: null } };
 	assert.equal(statusLine(state, NOW).text, "🦖 Codex 额度：( Plus | 5h 78% ↻2h  7d 64% ↻3d )");
 	const detail = detailLines(state, NOW).join("\n");
@@ -150,10 +238,10 @@ test("missing card count, missing history and zero cards are different states", 
 
 test("unknown card statuses/dates never masquerade as available or unlimited", () => {
 	const cards = parseResetCredits({ credits: [{ status: "raw-secret", expires_at: "tomorrow", granted_at: "2026-10-07T12:00:00" }] }, NOW);
-	assert.equal(cards.credits[0].status, "unknown");
-	assert.equal(cards.credits[0].expiresAt, null);
-	assert.equal(cards.credits[0].grantedAt, null);
-	const state = { ...ready(parseQuota(payload(), NOW)), resetCredits: { snapshot: cards, stale: false } };
+	assert.equal(present(cards.credits)[0].status, "unknown");
+	assert.equal(present(cards.credits)[0].expiresAt, null);
+	assert.equal(present(cards.credits)[0].grantedAt, null);
+	const state = { ...ready(parseQuota(payload(), NOW)), resetCredits: { snapshot: cards, stale: false, error: null, retryAt: null } };
 	assert.match(detailLines(state, NOW).join("\n"), /状态未知/);
 	assert.match(detailLines(state, NOW).join("\n"), /有效期未知/);
 	assertSanitized(state, "raw-secret");
@@ -171,14 +259,14 @@ test("quota-line formatting binds each original window independently and leaves 
 		data.rate_limit.secondary_window.used_percent = used[1];
 		const state = ready(parseQuota(data, NOW));
 		const before = structuredClone(state);
-		const seen = [];
+		const seen: { key: QuotaWindow["key"]; remaining: number; low: boolean }[] = [];
 		const formatted = detailLines(state, NOW, 12, (line, window) => {
 			seen.push({ key: window.key, remaining: window.remainingPercent, low: isLowQuota(window.remainingPercent) });
 			assert.match(line, /[█░]/);
 			return line;
 		});
 		assert.deepEqual(formatted, detailLines(state, NOW, 12));
-		assert.deepEqual(seen, state.snapshot.windows.map((window) => ({ key: window.key, remaining: window.remainingPercent, low: isLowQuota(window.remainingPercent) })));
+		assert.deepEqual(seen, quotaSnapshot(state).windows.map((window) => ({ key: window.key, remaining: window.remainingPercent, low: isLowQuota(window.remainingPercent) })));
 		assert.deepEqual(seen.map((window) => window.low), used[0] === 80 ? [true, false] : used[1] === 80 ? [false, true] : [false, true]);
 		if (used[0] === 79.999) {
 			assert.match(formatted.join("\n"), /5h .*剩20%/);
@@ -202,8 +290,8 @@ test("card endpoint errors do not hide successfully fetched usage", async () => 
 		const state = await h.controller.refresh();
 		assert.equal(state.phase, "ready");
 		assert.equal(state.stale, false);
-		assert.equal(state.resetCredits.snapshot, null);
-		assert.equal(state.resetCredits.error.httpStatus, status);
+		assert.equal(resetCredits(state).snapshot, null);
+		assert.equal(present(resetCredits(state).error).httpStatus, status);
 		assert.match(detailLines(state, NOW).join("\n"), /可用 未知/);
 		assertSanitized(state, "synthetic-card-body-secret");
 		h.controller.dispose();
@@ -221,7 +309,7 @@ test("card failures retain explicitly stale cards and have independent backoff",
 	h.advance(THROTTLE_MS);
 	const state = await h.controller.refresh();
 	assert.equal(state.phase, "ready");
-	assert.equal(state.resetCredits.stale, true);
+	assert.equal(resetCredits(state).stale, true);
 	assert.match(detailLines(state, h.now).join("\n"), /可用 2 张 \[过期缓存\]/);
 	assert.match(detailLines(state, h.now).join("\n"), /明细为过期缓存/);
 	assertSanitized(state, "synthetic-reset-secret");
@@ -231,7 +319,7 @@ test("card failures retain explicitly stale cards and have independent backoff",
 	assert.equal(h.resetRequests.length, 2);
 	fail = false;
 	await h.controller.refresh(true);
-	assert.equal(h.controller.getState().resetCredits.stale, false);
+	assert.equal(resetCredits(h.controller.getState()).stale, false);
 	h.controller.dispose();
 });
 
@@ -256,12 +344,12 @@ test("card auth failure and account changes clear both usage and card caches", a
 	id = "synthetic-account-B";
 	status = 404;
 	let state = await h.controller.refresh(true);
-	assert.equal(state.resetCredits.snapshot, null);
+	assert.equal(resetCredits(state).snapshot, null);
 	status = 401;
 	state = await h.controller.refresh(true);
 	assert.equal(state.phase, "auth_error");
 	assert.equal(state.snapshot, null);
-	assert.equal(state.resetCredits.snapshot, null);
+	assert.equal(resetCredits(state).snapshot, null);
 	h.controller.dispose();
 });
 
@@ -275,7 +363,7 @@ test("card timeout keeps usage ready and shutdown cancels in-flight card reads",
 	timeout.abort(new DOMException("Synthetic card timeout", "TimeoutError"));
 	const state = await pending;
 	assert.equal(state.phase, "ready");
-	assert.equal(state.resetCredits.error.kind, "timeout");
+	assert.equal(present(resetCredits(state).error).kind, "timeout");
 	h.controller.dispose();
 	const h2 = harness({ resetTransport: () => new Promise(() => {}) });
 	const pending2 = h2.controller.refresh();
@@ -283,7 +371,7 @@ test("card timeout keeps usage ready and shutdown cancels in-flight card reads",
 	h2.controller.dispose();
 	await pending2;
 	assert.equal(h2.resetRequests[0].init.signal.aborted, true);
-	assert.equal(h2.controller.getState().resetCredits.snapshot, null);
+	assert.equal(resetCredits(h2.controller.getState()).snapshot, null);
 });
 
 test("22% used becomes 78% remaining; reset_at is Unix seconds", () => {
@@ -326,7 +414,7 @@ test("HUD displays the live plan, quota percentages and countdowns", () => {
 });
 
 test("HUD still omits reset cards and subscription expiry", () => {
-	const state = { ...ready(parseQuota(payload(), NOW)), resetCredits: { snapshot: parseResetCredits(resetPayload(), NOW), stale: false } };
+	const state = { ...ready(parseQuota(payload(), NOW)), resetCredits: { snapshot: parseResetCredits(resetPayload(), NOW), stale: false, error: null, retryAt: null } };
 	assert.doesNotMatch(statusLine(state, NOW).text, /重置卡|订阅到期|->/);
 	assert.match(statusLine(state, NOW).text, /↻2h .*↻3d/);
 	assert.match(detailLines(state, NOW).join("\n"), /可用 2 张/);
@@ -356,10 +444,12 @@ test("HUD shows unknown or awaiting refresh for missing, due and past reset time
 
 test("a lone primary weekly window is not mislabeled 5h; extra quotas are not mixed in", () => {
 	const data = payload();
-	data.rate_limit.primary_window = data.rate_limit.secondary_window;
-	data.rate_limit.secondary_window = null;
-	data.additional_rate_limits = [{ rate_limit: { primary_window: { used_percent: 99 } } }];
-	const snapshot = parseQuota(data, NOW);
+	const weekly = {
+		...data,
+		rate_limit: { ...data.rate_limit, primary_window: data.rate_limit.secondary_window, secondary_window: null },
+		additional_rate_limits: [{ rate_limit: { primary_window: { used_percent: 99 } } }],
+	};
+	const snapshot = parseQuota(weekly, NOW);
 	assert.equal(snapshot.windows.length, 1);
 	assert.equal(windowLabel(snapshot.windows[0]), "7d");
 	assert.equal(statusLine(ready(snapshot), NOW).text, "🦖 Codex 额度：( Plus | 7d 64% ↻3d )");
@@ -380,14 +470,14 @@ test("valid null/absent/empty windows mean no data, not zero or unlimited", () =
 		{ rate_limit: {} }, { rate_limit: { primary_window: null, secondary_window: null } },
 	]) {
 		const state = ready(parseQuota(data, NOW));
-		assert.equal(state.snapshot.windows.length, 0);
+		assert.equal(quotaSnapshot(state).windows.length, 0);
 		assert.match(statusLine(state, NOW).text, /暂无主额度数据/);
 		assert.doesNotMatch(statusLine(state, NOW).text, /0%|100%|无限/);
 	}
 });
 
 test("malformed responses and missing/non-numeric percentages are rejected", () => {
-	const bad = [null, [], {}, { error: "synthetic-secret" }, { rate_limit: "bad" }];
+	const bad: unknown[] = [null, [], {}, { error: "synthetic-secret" }, { rate_limit: "bad" }];
 	for (const percent of [undefined, null, "22", NaN, Infinity, -1]) {
 		bad.push({ rate_limit: { primary_window: { used_percent: percent } } });
 	}
@@ -398,7 +488,7 @@ test("malformed responses and missing/non-numeric percentages are rejected", () 
 });
 
 test("relative reset fallback is anchored to receipt time, only when reset_at is absent", () => {
-	const data = { rate_limit: { primary_window: { used_percent: 22, reset_after_seconds: 120 } } };
+	const data: { rate_limit: { primary_window: WindowFixture } } = { rate_limit: { primary_window: { used_percent: 22, reset_after_seconds: 120 } } };
 	let snapshot = parseQuota(data, NOW);
 	assert.equal(snapshot.windows[0].resetAt, NOW + 120_000);
 	assert.equal(resetRemaining(snapshot.windows[0].resetAt, NOW + 60_000), "1m");
@@ -488,14 +578,14 @@ test("host OAuth errors are distinguished from missing login and fully sanitized
 	const h = harness({ auth: async () => { throw new Error(`OAuth response: {refresh_token:${secret}}`); } });
 	const state = await h.controller.refresh();
 	assert.equal(state.phase, "auth_error");
-	assert.equal(state.error.kind, "auth");
+	assert.equal(present(state.error).kind, "auth");
 	assert.equal(h.requests.length, 0);
 	assert.match(detailLines(state, NOW).join("\n"), /续期失败/);
 	assertSanitized(state, secret, "OAuth response");
 });
 
 test("concurrent automatic/manual refreshes share one auth resolution and one request", async () => {
-	const auth = deferred();
+	const auth = deferred<ProviderAuth>();
 	const h = harness({ auth: () => auth.promise });
 	const first = h.controller.refresh();
 	const second = h.controller.refresh(true);
@@ -534,7 +624,7 @@ test("network failure preserves a visibly stale cache and backs off failed attem
 	h.advance(THROTTLE_MS);
 	const state = await h.controller.refresh();
 	assert.equal(state.phase, "network_error");
-	assert.equal(state.snapshot.windows[0].remainingPercent, 78);
+	assert.equal(quotaSnapshot(state).windows[0].remainingPercent, 78);
 	assert.equal(state.stale, true);
 	assert.equal(state.lastSuccessAt, NOW);
 	assert.match(statusLine(state, h.now).text, /^🦖 Codex\[过期\] 额度：\(/);
@@ -553,7 +643,7 @@ test("automatic error backoff is capped at five minutes", async () => {
 	const h = harness({ transport: async () => { throw new Error("offline"); } });
 	for (const delay of [60_000, 120_000, 240_000, 300_000, 300_000]) {
 		const state = await h.controller.refresh();
-		assert.equal(state.retryAt - h.now, delay);
+		assert.equal(present(state.retryAt) - h.now, delay);
 		h.advance(delay);
 	}
 	h.controller.dispose();
@@ -636,7 +726,7 @@ test("malformed JSON/data produce sanitized data errors without inventing a quot
 test("the 10-second quota timeout also settles transports that ignore AbortSignal", async () => {
 	const timeout = new AbortController();
 	let requestedTimeout;
-	const response = deferred();
+	const response = deferred<Response>();
 	const h = harness({ transport: () => response.promise, timeoutSignal: (milliseconds) => {
 		requestedTimeout = milliseconds;
 		return timeout.signal;
@@ -655,7 +745,7 @@ test("the 10-second quota timeout also settles transports that ignore AbortSigna
 });
 
 test("shutdown settles the wait and ignores late host authentication without fetching", async () => {
-	const auth = deferred();
+	const auth = deferred<ProviderAuth>();
 	const h = harness({ auth: () => auth.promise });
 	const pending = h.controller.refresh();
 	await tick();
@@ -673,7 +763,7 @@ test("shutdown settles the wait and ignores late host authentication without fet
 });
 
 test("shutdown aborts HTTP requests and prevents a late response from updating UI", async () => {
-	const response = deferred();
+	const response = deferred<Response>();
 	const h = harness({ transport: () => response.promise });
 	const pending = h.controller.refresh();
 	await tick();
@@ -702,10 +792,10 @@ test("restricted and nearly exhausted quotas are not colored as healthy", () => 
 test("public state snapshots cannot mutate the controller's cached values", async () => {
 	const h = harness();
 	const state = await h.controller.refresh();
-	state.snapshot.windows[0].remainingPercent = 1;
-	state.resetCredits.snapshot.credits[0].status = "used";
-	assert.equal(h.controller.getState().snapshot.windows[0].remainingPercent, 78);
-	assert.equal(h.controller.getState().resetCredits.snapshot.credits[0].status, "available");
+	quotaSnapshot(state).windows[0].remainingPercent = 1;
+	resetCards(state)[0].status = "used";
+	assert.equal(quotaSnapshot(h.controller.getState()).windows[0].remainingPercent, 78);
+	assert.equal(resetCards(h.controller.getState())[0].status, "available");
 	h.controller.dispose();
 });
 
@@ -770,13 +860,13 @@ test("confirmed selected card posts once with UUID and synchronizes actual serve
 	assert.equal(init.headers.Authorization, `Bearer ${token()}`);
 	assert.equal(init.headers["ChatGPT-Account-Id"], "synthetic-account-A");
 	assert.equal(init.headers["Content-Type"], "application/json");
-	const body = JSON.parse(init.body);
+	const body = consumeBody(h.consumeRequests[0]);
 	assert.equal(body.credit_id, "synthetic-credit-secret");
 	assert.match(body.redeem_request_id, /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/);
 	assert.deepEqual(h.allRequests.map((req) => req.url), [API_URL, RESET_CREDITS_URL, API_URL, RESET_CREDITS_URL, CONSUME_RESET_URL, API_URL, RESET_CREDITS_URL]);
-	assert.equal(h.controller.getState().snapshot.windows[0].remainingPercent, 93);
-	assert.equal(h.controller.getState().resetCredits.snapshot.availableCount, 1);
-	assert.match(ui.notices.at(-1).message, /确认重置成功.*已重新查询/);
+	assert.equal(quotaSnapshot(h.controller.getState()).windows[0].remainingPercent, 93);
+	assert.equal(resetSnapshot(h.controller.getState()).availableCount, 1);
+	assert.match(present(ui.notices.at(-1)).message, /确认重置成功.*已重新查询/);
 	assert.deepEqual(ui.dialogs[1].options, ["取消", "确认使用这张卡"]);
 	assertResetSanitized(h, ui);
 	h.controller.dispose();
@@ -793,7 +883,7 @@ test("selection remains bound to its card ID even when revalidation reorders row
 	const ui = resetUI({ choice: 1, onSelect: async (count) => { if (count === 2) reordered = true; } });
 	await h.controller.useResetCredit(ui);
 	assert.equal(h.consumeRequests.length, 1);
-	assert.equal(JSON.parse(h.consumeRequests[0].init.body).credit_id, "synthetic-second-credit");
+	assert.equal(consumeBody(h.consumeRequests[0]).credit_id, "synthetic-second-credit");
 	assert.match(ui.dialogs[1].title, /#2/);
 	assert.ok(!JSON.stringify(ui.dialogs).includes("synthetic-second-credit"));
 	h.controller.dispose();
@@ -864,7 +954,7 @@ test("query failure, missing details, no OAuth and query cooldown cannot use cac
 	fail = true;
 	await h.controller.useResetCredit(resetUI());
 	assert.equal(h.consumeRequests.length, 0);
-	assert.equal(h.controller.getState().resetCredits.stale, true);
+	assert.equal(resetCredits(h.controller.getState()).stale, true);
 	h.controller.dispose();
 });
 
@@ -881,10 +971,10 @@ test("all official outcomes are distinguished and never fabricate quotas/card co
 		const h = harness({ consumeTransport: async () => Response.json({ code }) });
 		const ui = resetUI();
 		await h.controller.useResetCredit(ui);
-		assert.match(ui.notices.at(-1).message, message);
+		assert.match(present(ui.notices.at(-1)).message, message);
 		assert.equal(h.consumeRequests.length, 1);
-		assert.equal(h.controller.getState().snapshot.windows[0].remainingPercent, 78);
-		assert.equal(h.controller.getState().resetCredits.snapshot.availableCount, 2);
+		assert.equal(quotaSnapshot(h.controller.getState()).windows[0].remainingPercent, 78);
+		assert.equal(resetSnapshot(h.controller.getState()).availableCount, 2);
 		if (code === "reset" || code === "already_redeemed") {
 			await h.controller.useResetCredit(resetUI());
 			assert.equal(h.consumeRequests.length, 1, "stale available record must not allow a second POST");
@@ -900,7 +990,7 @@ test("HTTP auth rejection clears caches, while 429 honors consumption cooldown",
 		const ui = resetUI();
 		await h.controller.useResetCredit(ui);
 		assert.equal(h.consumeRequests.length, 1);
-		assert.match(ui.notices.at(-1).message, new RegExp(`HTTP ${status}`));
+		assert.match(present(ui.notices.at(-1)).message, new RegExp(`HTTP ${status}`));
 		if (status === 429) {
 			assert.equal(h.requests.length, 3, "429 still permits read-only reconciliation");
 			await h.controller.useResetCredit(resetUI());
@@ -913,7 +1003,7 @@ test("HTTP auth rejection clears caches, while 429 honors consumption cooldown",
 		} else {
 			assert.equal(h.controller.getState().phase, "auth_error");
 			assert.equal(h.controller.getState().snapshot, null);
-			assert.equal(h.controller.getState().resetCredits.snapshot, null);
+			assert.equal(resetCredits(h.controller.getState()).snapshot, null);
 		}
 		assertResetSanitized(h, ui);
 		h.controller.dispose();
@@ -930,7 +1020,7 @@ test("ambiguous 5xx, network and malformed 2xx stay locked, with no automatic PO
 		const h = harness({ consumeTransport });
 		const ui = resetUI();
 		await h.controller.useResetCredit(ui);
-		assert.match(ui.notices.at(-1).message, /结果不确定/);
+		assert.match(present(ui.notices.at(-1)).message, /结果不确定/);
 		await h.controller.refresh(true);
 		h.advance(60_000);
 		await h.controller.refresh();
@@ -957,7 +1047,7 @@ test("unknown outcome remains locked across pending records and account switchin
 	assert.equal(h.consumeRequests.length, 1);
 	status = "redeemed";
 	await h.controller.refresh(true);
-	assert.equal(h.controller.getState().resetCredits.snapshot.credits[0].status, "used");
+	assert.equal(resetCards(h.controller.getState())[0].status, "used");
 	h.controller.dispose();
 });
 
@@ -972,10 +1062,10 @@ test("success and uncertain results keep old data stale when reconciliation fail
 		await h.controller.useResetCredit(ui);
 		const state = h.controller.getState();
 		assert.equal(state.stale, true);
-		assert.equal(state.resetCredits.stale, true);
-		assert.equal(state.snapshot.windows[0].remainingPercent, 78);
-		assert.match(ui.notices.at(-1).message, /数据同步未完成/);
-		assert.match(ui.notices.at(-1).message, code === "reset" ? /确认重置成功/ : /结果不确定/);
+		assert.equal(resetCredits(state).stale, true);
+		assert.equal(quotaSnapshot(state).windows[0].remainingPercent, 78);
+		assert.match(present(ui.notices.at(-1)).message, /数据同步未完成/);
+		assert.match(present(ui.notices.at(-1)).message, code === "reset" ? /确认重置成功/ : /结果不确定/);
 		await h.controller.useResetCredit(resetUI());
 		assert.equal(h.consumeRequests.length, 1);
 		h.controller.dispose();
@@ -993,7 +1083,7 @@ test("consume timeout settles transports ignoring AbortSignal and blocks subsequ
 	timeout.abort(new Error("synthetic-body-secret"));
 	await operation;
 	assert.equal(h.consumeRequests[0].init.signal.aborted, true);
-	assert.match(ui.notices.at(-1).message, /结果不确定/);
+	assert.match(present(ui.notices.at(-1)).message, /结果不确定/);
 	await h.controller.useResetCredit(resetUI());
 	assert.equal(h.consumeRequests.length, 1);
 	assertResetSanitized(h, ui);
@@ -1039,7 +1129,7 @@ test("account/logout/card changes and expiry during confirmation cancel without 
 
 test("single-flight covers selection, confirmation and POST while polls cannot overwrite it", async () => {
 	const waitSelection = deferred();
-	const waitPost = deferred();
+	const waitPost = deferred<Response>();
 	const h = harness({ consumeTransport: () => waitPost.promise });
 	const ui = resetUI({ onSelect: async (count) => { if (count === 1) await waitSelection.promise; } });
 	const first = h.controller.useResetCredit(ui);
@@ -1064,7 +1154,7 @@ test("single-flight covers selection, confirmation and POST while polls cannot o
 });
 
 test("an existing refresh completes before reset preparation; no stale refresh races POST", async () => {
-	const waiting = deferred();
+	const waiting = deferred<Response>();
 	let first = true;
 	const h = harness({ transport: async () => { if (first) { first = false; return waiting.promise; } return Response.json(payload()); } });
 	const refresh = h.controller.refresh();
@@ -1081,18 +1171,22 @@ test("an existing refresh completes before reset preparation; no stale refresh r
 
 test("shutdown settles waiting dialogs/auth/POST and ignores late results", async () => {
 	for (const stage of ["dialog", "auth", "post"]) {
-		const waiting = deferred();
+		const dialog = deferred();
+		const auth = deferred<ProviderAuth>();
+		const post = deferred<Response>();
 		const h = harness({
-			auth: stage === "auth" ? () => waiting.promise : async () => oauth(),
-			consumeTransport: stage === "post" ? () => waiting.promise : undefined,
+			auth: stage === "auth" ? () => auth.promise : async () => oauth(),
+			consumeTransport: stage === "post" ? () => post.promise : undefined,
 		});
-		const ui = resetUI({ onSelect: stage === "dialog" ? () => waiting.promise : undefined });
+		const ui = resetUI({ onSelect: stage === "dialog" ? () => dialog.promise : undefined });
 		const use = h.controller.useResetCredit(ui);
 		await tick();
 		const changesBefore = h.changes.length;
 		h.controller.dispose();
 		await use;
-		waiting.resolve(stage === "auth" ? oauth() : Response.json({ code: "reset" }));
+		dialog.resolve();
+		auth.resolve(oauth());
+		post.resolve(Response.json({ code: "reset" }));
 		await tick();
 		assert.equal(h.changes.length, changesBefore);
 		assert.equal(h.controller.getState().snapshot, null);

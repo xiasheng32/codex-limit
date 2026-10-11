@@ -1,6 +1,6 @@
 {
   "name": "codex-limit",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Pi extension: 在页脚显示 Codex 订阅剩余额度与重置时间。",
   "type": "module",
   "keywords": [
@@ -25,8 +25,10 @@
   "files": [
     "extensions/codex-limit.ts",
     "src/quota.ts",
-    "scripts/sync-autoload.mjs",
-    "tests/codex-limit.test.mjs",
+    "scripts/sync-autoload.ts",
+    "tests/codex-limit.test.ts",
+    "tests/sync-autoload.test.ts",
+    "tsconfig.json",
     "README.md",
     "LICENSE"
   ],
@@ -36,8 +38,16 @@
     ]
   },
   "scripts": {
-    "test": "node --test tests/codex-limit.test.mjs",
-    "sync-autoload": "node scripts/sync-autoload.mjs"
+    "test": "node --test tests/codex-limit.test.ts tests/sync-autoload.test.ts",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test",
+    "sync-autoload": "node scripts/sync-autoload.ts"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.0.4",
+    "@earendil-works/pi-tui": "1.0.4",
+    "@types/node": "22.19.0",
+    "typescript": "5.9.3"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

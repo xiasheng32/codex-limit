@@ -12,6 +12,13 @@
 
 窗口数量和长度以服务端为准，不保证每个账号都有“5 小时 + 7 天”两种窗口。这里不是 OpenAI API 账户余额，也不是当前会话的 token 用量。
 
+## v0.2.1 更新
+
+- 测试与同步脚本统一为 TypeScript，保留 Node 原生执行，不引入额外 TS 运行器或编译产物。
+- 新增 `npm run typecheck` 严格类型检查、`npm run check` 综合验证，以及开发依赖锁定。
+- 保留原有 62 项用例，新增 2 项临时目录中的同步脚本测试，共 64 项离线测试。
+- 额度查询、手动用卡及界面行为保持不变，无新增运行时依赖。
+
 ## v0.2.0 更新
 
 - 新增详情面板 `u` 手动使用重置卡：明确选卡、取消优先确认、账号与卡片复核、单次消费及未决结果防重复保护；不自动消费或重试。
@@ -21,7 +28,7 @@
 
 ## 安装与试用
 
-需要 Node.js >=22.19 和提供 `modelRegistry.getProviderAuth()` 的 pi；已验证的宿主版本为 **1.0.4**。无需额外安装运行时或测试依赖，pi 提供宿主包。
+需要 Node.js >=22.19 和提供 `modelRegistry.getProviderAuth()` 的 pi；已验证的宿主版本为 **1.0.4**。运行时与离线测试无需额外安装依赖，pi 提供宿主包。项目自维护代码统一为 TypeScript，由 Node 原生运行，不引入编译产物或额外 TS 运行器；开发类型检查需安装开发依赖。
 
 克隆项目后，在包含 `package.json` 的项目根目录运行（解开 `.tgz` 后则进入 `package/`）：
 
@@ -142,12 +149,20 @@ pi --offline -ne -e .
 
 ```bash
 npm test
-# 等价于 node --test tests/codex-limit.test.mjs；不需要额外安装测试依赖
+# 原生运行 tests/*.test.ts；不需要额外安装测试依赖
+
+# 安装本项目开发依赖，不安装插件、不修改全局 pi；不执行依赖安装脚本
+npm ci --ignore-scripts --no-audit --no-fund
+# 解包后的目录没有 package-lock.json 时，改用 npm install --ignore-scripts --no-audit --no-fund
+npm run typecheck  # 严格检查入口、核心、同步脚本与测试，不生成 JS
+npm run check      # 类型检查 + 全部离线测试
 
 pi --offline -ne -e . --help
 ```
 
-测试仅使用合成 JWT、假认证、假 HTTP 响应、假选择 UI 和可控时间；覆盖比例/窗口/重置解析、确认与取消、指定卡片单次 POST、四种官方返回码、未决锁、账号切换、超时、错误脱敏、节流、单飞、退避、限流和关闭清理；绝不消费真实卡片。帮助命令不查询真实额度，但不能单独证明扩展加载成功，也不验证真实账号访问；离线交互式试用可检查 HUD 与命令是否注册。
+类型检查使用 TypeScript、Node 类型及仅供开发的 pi 1.0.4 宿主包；运行时仍由 pi 提供宿主包，不将其加入运行时依赖或捆绑进扩展。`tsconfig.json` 开启严格检查、未使用声明检查及可擦除语法限制；Node 原生运行只擦除类型，不能替代 `npm run typecheck`。
+
+测试保留全部额度/用卡用例，并覆盖 TS 同步脚本的指定输出与默认输出：这两类同步测试均隔离在临时目录及临时 HOME，不写入真实 Pi 自加载目录。测试仅使用合成 JWT、假认证、假 HTTP 响应、假选择 UI 和可控时间；覆盖比例/窗口/重置解析、确认与取消、指定卡片单次 POST、四种官方返回码、未决锁、账号切换、超时、错误脱敏、节流、单飞、退避、限流和关闭清理；绝不消费真实卡片。帮助命令不查询真实额度，但不能单独证明扩展加载成功，也不验证真实账号访问；离线交互式试用可检查 HUD 与命令是否注册。
 
 如需核对真实数据，可自行运行 `pi -ne -e .`，用 `/codex-limit` 对照 Codex 官方用量页检查剩余比例及重置时刻；这不是离线测试的一部分。
 
@@ -157,7 +172,7 @@ pi --offline -ne -e . --help
 
 ```bash
 npm pack --offline --ignore-scripts --pack-destination ..
-# 上一级目录生成 codex-limit-0.2.0.tgz，不安装插件、不发布 npm
+# 上一级目录生成 codex-limit-0.2.1.tgz，不安装插件、不发布 npm
 ```
 
 上传 GitHub 时使用本项目目录的内容，让 `package.json` 位于仓库根目录；不要把整个父目录、`.tgz`、凭据或本机配置上传。源码、测试、README、许可证和 `.gitignore` 均可保留。包清单使用精确文件白名单，不需要 `node_modules/`；压缩包解开后也可直接运行 `npm test` 和 `pi -ne -e .`。
@@ -168,8 +183,11 @@ npm pack --offline --ignore-scripts --pack-destination ..
 codex-limit/
 ├── extensions/codex-limit.ts       # pi 入口、HUD、命令与浮层
 ├── src/quota.ts                   # 可离线测试的解析、请求和状态机
-├── tests/codex-limit.test.mjs
-├── scripts/sync-autoload.mjs      # 显式同步 pi 自加载副本
+├── tests/codex-limit.test.ts
+├── tests/sync-autoload.test.ts    # 临时目录中的同步脚本测试
+├── scripts/sync-autoload.ts       # 显式同步 pi 自加载副本
+├── tsconfig.json                 # 只做类型检查，不生成 JS
+├── package-lock.json             # 仓库开发依赖锁定
 ├── package.json
 ├── README.md
 ├── .gitignore
