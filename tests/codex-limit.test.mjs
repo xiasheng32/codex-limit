@@ -3,7 +3,7 @@ import { test } from "node:test";
 import {
 	API_URL, detailLines, extractAccountId, isOffline, parseQuota, parseRetryAfter,
 	QuotaController, resetRemaining, statusLine, THROTTLE_MS, TIMEOUT_MS, windowLabel,
-	RESET_CREDITS_URL, parseResetCredits, quotaBar,
+	RESET_CREDITS_URL, CONSUME_RESET_URL, parseResetCredits, parseConsumeResult, quotaBar, isLowQuota,
 } from "../src/quota.ts";
 
 // Tripwire: tests must never fall through to a real account/network request.
@@ -47,16 +47,20 @@ function resetPayload() {
 function ready(snapshot) {
 	return { phase: "ready", snapshot, lastAttemptAt: NOW, lastSuccessAt: NOW, stale: false, retryAt: null, error: null };
 }
-function harness({ auth = async () => oauth(), transport = async () => Response.json(payload()), resetTransport = async () => Response.json(resetPayload()), offline = false, timeoutSignal } = {}) {
+function harness({ auth = async () => oauth(), transport = async () => Response.json(payload()), resetTransport = async () => Response.json(resetPayload()), consumeTransport = async () => Response.json({ code: "reset", windows_reset: 2 }), offline = false, timeoutSignal } = {}) {
 	let time = NOW;
 	let authCalls = 0;
 	const requests = [];
 	const resetRequests = [];
+	const consumeRequests = [];
+	const allRequests = [];
 	const changes = [];
 	const controller = new QuotaController({
 		now: () => time,
 		resolveAuth: async () => { authCalls++; return auth(); },
 		fetch: async (url, init) => {
+			allRequests.push({ url, init });
+			if (url === CONSUME_RESET_URL) { consumeRequests.push({ url, init }); return consumeTransport(url, init); }
 			if (url === RESET_CREDITS_URL) { resetRequests.push({ url, init }); return resetTransport(url, init); }
 			requests.push({ url, init }); return transport(url, init);
 		},
@@ -64,7 +68,7 @@ function harness({ auth = async () => oauth(), transport = async () => Response.
 		offline, timeoutSignal,
 	});
 	return {
-		controller, requests, resetRequests, changes,
+		controller, requests, resetRequests, consumeRequests, allRequests, changes,
 		advance: (milliseconds) => { time += milliseconds; },
 		get now() { return time; },
 		get authCalls() { return authCalls; },
@@ -73,6 +77,29 @@ function harness({ auth = async () => oauth(), transport = async () => Response.
 function assertSanitized(state, ...secrets) {
 	const output = JSON.stringify(state) + detailLines(state, NOW).join("\n") + statusLine(state, NOW).text;
 	for (const secret of secrets) assert.ok(!output.includes(secret), "State and UI must not contain authentication/provider secrets");
+}
+
+function resetUI({ pick = true, choice = 0, confirm = true, onSelect } = {}) {
+	const dialogs = [];
+	const notices = [];
+	return {
+		dialogs, notices,
+		select: async (title, options) => {
+			dialogs.push({ title, options: [...options] });
+			if (onSelect) await onSelect(dialogs.length, options);
+			return dialogs.length === 1 ? (pick ? options[choice] : undefined) : (confirm ? options[1] : options[0]);
+		},
+		notify: (message, type) => notices.push({ message, type }),
+	};
+}
+
+function assertResetSanitized(h, ui) {
+	const id = h.consumeRequests.length ? JSON.parse(h.consumeRequests[0].init.body).redeem_request_id : "unused-request-id";
+	const secrets = [token(), "synthetic-account-A", "synthetic-credit-secret", id, "synthetic-body-secret"];
+	assertSanitized(h.controller.getState(), ...secrets);
+	for (const state of h.changes) assertSanitized(state, ...secrets);
+	const text = JSON.stringify({ dialogs: ui.dialogs, notices: ui.notices });
+	for (const secret of secrets) assert.ok(!text.includes(secret), "Dialogs and notices must stay sanitized");
 }
 
 test("reset cards parse known metadata and discard all account/credit secrets", () => {
@@ -86,13 +113,25 @@ test("reset cards parse known metadata and discard all account/credit secrets", 
 	assert.equal(cards.credits[0].expiresAt, Date.parse("2026-10-22T21:00:00Z"));
 	assert.equal(cards.credits[2].redeemedAt, Date.parse("2026-10-01T12:00:00Z"));
 	const state = { ...ready(parseQuota(payload(), NOW)), resetCredits: { snapshot: cards, stale: false, error: null, retryAt: null } };
-	assert.equal(statusLine(state, NOW).text, "🦖 Codex 额度：( Plus | 5h 78% 7d 64% )");
+	assert.equal(statusLine(state, NOW).text, "🦖 Codex 额度：( Plus | 5h 78% ↻2h  7d 64% ↻3d )");
 	const detail = detailLines(state, NOW).join("\n");
 	assert.match(detail, /可用 2 张/);
-	assert.match(detail, /已用 1 张 · 已过期 1 张/);
+	assert.doesNotMatch(detail, /返回记录：|累计获得：|卡片更新：/);
+	assert.equal(detail.split("\n").filter((line) => line.startsWith("更新：")).length, 1);
+	assert.match(detail, /#3 重置卡 · 已使用/);
+	assert.match(detail, /#4 重置卡 · 已过期/);
 	assert.match(detail, /完全重置（7d \+ 5h）/);
 	assert.match(detail, /仅显示接口返回记录/);
 	assertSanitized(state, "synthetic-credit-secret", "synthetic-title-secret", "synthetic-description-secret", "\u001b");
+});
+
+test("card details omit history totals even when the server returns zero counts", () => {
+	const cards = parseResetCredits({ available_count: 0, total_earned_count: 0, credits: [] }, NOW);
+	const state = { ...ready(parseQuota(payload(), NOW)), resetCredits: { snapshot: cards, stale: false, error: null, retryAt: null } };
+	const detail = detailLines(state, NOW).join("\n");
+	assert.doesNotMatch(detail, /返回记录：|累计获得：/);
+	assert.match(detail, /可用 0 张/);
+	assert.match(detail, /暂无卡片记录/);
 });
 
 test("missing card count, missing history and zero cards are different states", () => {
@@ -118,6 +157,36 @@ test("unknown card statuses/dates never masquerade as available or unlimited", (
 	assert.match(detailLines(state, NOW).join("\n"), /状态未知/);
 	assert.match(detailLines(state, NOW).join("\n"), /有效期未知/);
 	assertSanitized(state, "raw-secret");
+});
+
+test("low-quota bar threshold includes 20% and zero without rounding", () => {
+	for (const remaining of [0, 0.1, 19.9, 20]) assert.equal(isLowQuota(remaining), true);
+	for (const remaining of [20.001, 21, 77, 100]) assert.equal(isLowQuota(remaining), false);
+});
+
+test("quota-line formatting binds each original window independently and leaves default text unchanged", () => {
+	for (const used of [[80, 23], [23, 80], [79.999, 91]]) {
+		const data = payload();
+		data.rate_limit.primary_window.used_percent = used[0];
+		data.rate_limit.secondary_window.used_percent = used[1];
+		const state = ready(parseQuota(data, NOW));
+		const before = structuredClone(state);
+		const seen = [];
+		const formatted = detailLines(state, NOW, 12, (line, window) => {
+			seen.push({ key: window.key, remaining: window.remainingPercent, low: isLowQuota(window.remainingPercent) });
+			assert.match(line, /[█░]/);
+			return line;
+		});
+		assert.deepEqual(formatted, detailLines(state, NOW, 12));
+		assert.deepEqual(seen, state.snapshot.windows.map((window) => ({ key: window.key, remaining: window.remainingPercent, low: isLowQuota(window.remainingPercent) })));
+		assert.deepEqual(seen.map((window) => window.low), used[0] === 80 ? [true, false] : used[1] === 80 ? [false, true] : [false, true]);
+		if (used[0] === 79.999) {
+			assert.match(formatted.join("\n"), /5h .*剩20%/);
+			assert.ok(seen[0].remaining > 20, "The rounded 20% text must not drive the threshold");
+		}
+		assert.deepEqual(state, before);
+		assert.ok(!formatted.join("\n").includes("\u001b"));
+	}
 });
 
 test("progress bars show remaining quota and stay bounded on narrow layouts", () => {
@@ -221,25 +290,25 @@ test("22% used becomes 78% remaining; reset_at is Unix seconds", () => {
 	const snapshot = parseQuota(payload(), NOW);
 	assert.deepEqual(snapshot.windows.map((window) => window.remainingPercent), [78, 64]);
 	assert.equal(snapshot.windows[0].resetAt, NOW + 7200_000);
-	assert.equal(statusLine(ready(snapshot), NOW).text, "🦖 Codex 额度：( Plus | 5h 78% 7d 64% )");
+	assert.equal(statusLine(ready(snapshot), NOW).text, "🦖 Codex 额度：( Plus | 5h 78% ↻2h  7d 64% ↻3d )");
 	assert.match(detailLines(ready(snapshot), NOW).join("\n"), /7d .*剩64%/);
 });
 
-test("compact HUD preserves percentages while details keep reset countdowns", () => {
+test("HUD shows a reset countdown for each window while preserving percentages and markers", () => {
 	const data = payload();
 	data.rate_limit.primary_window.used_percent = 24;
 	data.rate_limit.primary_window.reset_at = NOW / 1000 + 11 * 60;
 	data.rate_limit.secondary_window.used_percent = 4;
 	data.rate_limit.secondary_window.reset_at = NOW / 1000 + (6 * 24 + 19) * 3600;
 	const state = ready(parseQuota(data, NOW));
-	assert.equal(statusLine(state, NOW).text, "🦖 Codex 额度：( Plus | 5h 76% 7d 96% )");
+	assert.equal(statusLine(state, NOW).text, "🦖 Codex 额度：( Plus | 5h 76% ↻11m  7d 96% ↻6d19h )");
 	assert.match(detailLines(state, NOW).join("\n"), /↻ 11m 后重置/);
 	assert.match(detailLines(state, NOW).join("\n"), /↻ 6d19h 后重置/);
 	assert.match(statusLine({ ...state, phase: "loading" }, NOW).text, /^🦖 Codex\[更新中\] 额度：\(/);
 	assert.match(statusLine({ ...state, snapshot: { ...state.snapshot, allowed: false } }, NOW).text, / \| 受限 \)$/);
 });
 
-test("compact HUD displays the live plan and quota percentages only", () => {
+test("HUD displays the live plan, quota percentages and countdowns", () => {
 	const data = payload();
 	data.rate_limit.primary_window.used_percent = 13;
 	data.rate_limit.primary_window.reset_at = NOW / 1000 + (4 * 60 + 34) * 60;
@@ -247,19 +316,42 @@ test("compact HUD displays the live plan and quota percentages only", () => {
 	data.rate_limit.secondary_window.reset_at = NOW / 1000 + (6 * 24 + 18) * 3600;
 	data.rate_limit_reset_credits = { available_count: 2 };
 	assert.equal(statusLine(ready(parseQuota(data, NOW)), NOW).text,
-		"🦖 Codex 额度：( Plus | 5h 87% 7d 93% )");
+		"🦖 Codex 额度：( Plus | 5h 87% ↻4h34m  7d 93% ↻6d18h )");
 	data.plan_type = "pro";
 	data.rate_limit_reset_credits.available_count = 0;
-	assert.match(statusLine(ready(parseQuota(data, NOW)), NOW).text, /\( Pro \| 5h 87% 7d 93% \)/);
+	assert.match(statusLine(ready(parseQuota(data, NOW)), NOW).text, /\( Pro \| 5h 87% ↻4h34m  7d 93% ↻6d18h \)/);
 	delete data.plan_type;
 	delete data.rate_limit_reset_credits;
-	assert.match(statusLine(ready(parseQuota(data, NOW)), NOW).text, /\( 套餐未知 \| 5h 87% 7d 93% \)/);
+	assert.match(statusLine(ready(parseQuota(data, NOW)), NOW).text, /\( 套餐未知 \| 5h 87% ↻4h34m  7d 93% ↻6d18h \)/);
 });
 
-test("compact HUD omits reset cards, countdowns and subscription expiry", () => {
+test("HUD still omits reset cards and subscription expiry", () => {
 	const state = { ...ready(parseQuota(payload(), NOW)), resetCredits: { snapshot: parseResetCredits(resetPayload(), NOW), stale: false } };
-	assert.doesNotMatch(statusLine(state, NOW).text, /重置卡|↻|订阅到期|->/);
+	assert.doesNotMatch(statusLine(state, NOW).text, /重置卡|订阅到期|->/);
+	assert.match(statusLine(state, NOW).text, /↻2h .*↻3d/);
 	assert.match(detailLines(state, NOW).join("\n"), /可用 2 张/);
+});
+
+test("HUD countdown advances with the supplied clock without changing cached percentages", () => {
+	const state = ready(parseQuota(payload(), NOW));
+	const original = structuredClone(state);
+	assert.equal(statusLine(state, NOW + 60_000).text, "🦖 Codex 额度：( Plus | 5h 78% ↻1h59m  7d 64% ↻2d23h )");
+	assert.equal(statusLine(state, NOW + 7200_000).text, "🦖 Codex 额度：( Plus | 5h 78% ↻待刷新  7d 64% ↻2d22h )");
+	assert.equal(statusLine(state, NOW + 7200_000).color, "warning");
+	assert.deepEqual(state, original, "Rendering must not restore quotas or mutate snapshots");
+	assert.match(statusLine({ ...state, stale: true }, NOW).text, /^🦖 Codex\[过期\].*↻2h/);
+	assert.equal(statusLine({ ...state, stale: true }, NOW).color, "warning");
+});
+
+test("HUD shows unknown or awaiting refresh for missing, due and past reset timestamps", () => {
+	const data = payload();
+	delete data.rate_limit.primary_window.reset_at;
+	delete data.rate_limit.primary_window.reset_after_seconds;
+	data.rate_limit.secondary_window.reset_at = NOW / 1000;
+	const state = ready(parseQuota(data, NOW));
+	assert.equal(statusLine(state, NOW).text, "🦖 Codex 额度：( Plus | 5h 78% ↻未知  7d 64% ↻待刷新 )");
+	assert.equal(statusLine(state, NOW + 60_000).text, statusLine(state, NOW).text);
+	assert.equal(statusLine(state, NOW).color, "warning");
 });
 
 test("a lone primary weekly window is not mislabeled 5h; extra quotas are not mixed in", () => {
@@ -270,7 +362,7 @@ test("a lone primary weekly window is not mislabeled 5h; extra quotas are not mi
 	const snapshot = parseQuota(data, NOW);
 	assert.equal(snapshot.windows.length, 1);
 	assert.equal(windowLabel(snapshot.windows[0]), "7d");
-	assert.equal(statusLine(ready(snapshot), NOW).text, "🦖 Codex 额度：( Plus | 7d 64% )");
+	assert.equal(statusLine(ready(snapshot), NOW).text, "🦖 Codex 额度：( Plus | 7d 64% ↻3d )");
 	assert.doesNotMatch(statusLine(ready(snapshot), NOW).text, /5h|1%/);
 });
 
@@ -615,4 +707,397 @@ test("public state snapshots cannot mutate the controller's cached values", asyn
 	assert.equal(h.controller.getState().snapshot.windows[0].remainingPercent, 78);
 	assert.equal(h.controller.getState().resetCredits.snapshot.credits[0].status, "available");
 	h.controller.dispose();
+});
+
+test("reset button reflects usable cards, errors, expiry, cooldown and offline without requesting data", async () => {
+	const h = harness();
+	assert.equal(h.controller.getResetButton().phase, "disabled");
+	assert.equal(h.authCalls, 0);
+	await h.controller.refresh();
+	assert.deepEqual(h.controller.getResetButton(), { phase: "ready", enabled: true, hint: "可选 1 张 · 选卡后确认，不会自动消费" });
+	const requests = h.allRequests.length;
+	for (let i = 0; i < 3; i++) h.controller.getResetButton();
+	assert.equal(h.allRequests.length, requests);
+	h.advance(30 * 86400_000);
+	assert.equal(h.controller.getResetButton().enabled, false);
+	assert.match(h.controller.getResetButton().hint, /已到期/);
+	h.controller.dispose();
+	assert.equal(h.controller.getResetButton().enabled, false);
+	for (const options of [
+		{ offline: true },
+		{ auth: async () => undefined },
+		{ transport: async () => new Response("", { status: 429 }) },
+		{ resetTransport: async () => new Response("", { status: 500 }) },
+	]) {
+		const h = harness(options);
+		await h.controller.refresh();
+		assert.equal(h.controller.getResetButton().phase, "disabled");
+		assert.equal(h.controller.getResetButton().enabled, false);
+		if (options.offline) { assert.match(h.controller.getResetButton().hint, /离线/); assert.equal(h.authCalls, 0); }
+		h.controller.dispose();
+	}
+});
+
+test("reset button is busy through dialogs and disabled when the card outcome is unresolved", async () => {
+	const waiting = deferred();
+	const h = harness({ consumeTransport: async () => new Response("", { status: 502 }) });
+	const ui = resetUI({ onSelect: async (count) => { if (count === 1) await waiting.promise; } });
+	const use = h.controller.useResetCredit(ui);
+	await tick();
+	assert.deepEqual(h.controller.getResetButton(), { phase: "busy", enabled: false, hint: "正在处理，请勿重复操作" });
+	waiting.resolve();
+	await use;
+	assert.equal(h.controller.getResetButton().enabled, false);
+	assert.match(h.controller.getResetButton().hint, /结果未决/);
+	assert.equal(h.consumeRequests.length, 1);
+	h.controller.dispose();
+});
+
+test("confirmed selected card posts once with UUID and synchronizes actual server values", async () => {
+	let consumed = false;
+	const h = harness({
+		consumeTransport: async () => { consumed = true; return Response.json({ code: "reset", windows_reset: 2 }); },
+		transport: async () => { const data = payload(); if (consumed) data.rate_limit.primary_window.used_percent = 7; return Response.json(data); },
+		resetTransport: async () => { const data = resetPayload(); if (consumed) { data.available_count = 1; data.credits[0].status = "redeemed"; } return Response.json(data); },
+	});
+	const ui = resetUI();
+	await h.controller.useResetCredit(ui);
+	assert.equal(h.consumeRequests.length, 1);
+	const { url, init } = h.consumeRequests[0];
+	assert.equal(url, CONSUME_RESET_URL);
+	assert.equal(init.method, "POST");
+	assert.equal(init.redirect, "error");
+	assert.equal(init.headers.Authorization, `Bearer ${token()}`);
+	assert.equal(init.headers["ChatGPT-Account-Id"], "synthetic-account-A");
+	assert.equal(init.headers["Content-Type"], "application/json");
+	const body = JSON.parse(init.body);
+	assert.equal(body.credit_id, "synthetic-credit-secret");
+	assert.match(body.redeem_request_id, /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/);
+	assert.deepEqual(h.allRequests.map((req) => req.url), [API_URL, RESET_CREDITS_URL, API_URL, RESET_CREDITS_URL, CONSUME_RESET_URL, API_URL, RESET_CREDITS_URL]);
+	assert.equal(h.controller.getState().snapshot.windows[0].remainingPercent, 93);
+	assert.equal(h.controller.getState().resetCredits.snapshot.availableCount, 1);
+	assert.match(ui.notices.at(-1).message, /确认重置成功.*已重新查询/);
+	assert.deepEqual(ui.dialogs[1].options, ["取消", "确认使用这张卡"]);
+	assertResetSanitized(h, ui);
+	h.controller.dispose();
+});
+
+test("selection remains bound to its card ID even when revalidation reorders rows", async () => {
+	let reordered = false;
+	const h = harness({ resetTransport: async () => {
+		const data = resetPayload();
+		data.credits[1].id = "synthetic-second-credit";
+		if (reordered) data.credits.reverse();
+		return Response.json(data);
+	} });
+	const ui = resetUI({ choice: 1, onSelect: async (count) => { if (count === 2) reordered = true; } });
+	await h.controller.useResetCredit(ui);
+	assert.equal(h.consumeRequests.length, 1);
+	assert.equal(JSON.parse(h.consumeRequests[0].init.body).credit_id, "synthetic-second-credit");
+	assert.match(ui.dialogs[1].title, /#2/);
+	assert.ok(!JSON.stringify(ui.dialogs).includes("synthetic-second-credit"));
+	h.controller.dispose();
+});
+
+test("cancel selection, default cancellation, absent UI and offline never consume", async () => {
+	for (const options of [{ pick: false }, { confirm: false }]) {
+		const h = harness();
+		await h.controller.useResetCredit(resetUI(options));
+		assert.equal(h.consumeRequests.length, 0);
+		h.controller.dispose();
+	}
+	for (const options of [{ offline: true }, {}]) {
+		const h = harness(options);
+		await h.controller.useResetCredit(options.offline ? resetUI() : undefined);
+		assert.equal(h.authCalls, 0);
+		assert.equal(h.allRequests.length, 0);
+		h.controller.dispose();
+	}
+});
+
+test("only unique valid known available unexpired card IDs can be selected", async () => {
+	for (const rows of [
+		[{ id: "valid", status: "redeemed", reset_type: "codex_rate_limits" }],
+		[{ id: "valid", status: "available", reset_type: "unknown" }],
+		[{ id: "valid", status: "pending", reset_type: "codex_rate_limits" }],
+		[{ id: "valid", status: "available", reset_type: "codex_rate_limits", expires_at: "2026-10-01T00:00:00Z" }],
+		[{ id: "valid", status: "available", reset_type: "codex_rate_limits", expires_at: "not-a-date" }],
+		[{ id: "bad\r\nsecret", status: "available", reset_type: "codex_rate_limits" }],
+		[{ status: "available", reset_type: "codex_rate_limits" }],
+		[1, 2].map(() => ({ id: "duplicate", status: "available", reset_type: "codex_rate_limits" })),
+		[],
+	]) {
+		const h = harness({ resetTransport: async () => Response.json({ available_count: 2, credits: rows }) });
+		const ui = resetUI();
+		await h.controller.useResetCredit(ui);
+		assert.equal(ui.dialogs.length, 0);
+		assert.equal(h.consumeRequests.length, 0);
+		h.controller.dispose();
+	}
+	const h = harness({ resetTransport: async () => Response.json({ credits: [{ id: "valid", status: "available", reset_type: "codex_rate_limits", expires_at: null }] }) });
+	const ui = resetUI();
+	await h.controller.useResetCredit(ui);
+	assert.match(ui.dialogs[0].options[0], /到期：未知/);
+	assert.equal(h.consumeRequests.length, 1);
+	h.controller.dispose();
+});
+
+test("query failure, missing details, no OAuth and query cooldown cannot use cached cards", async () => {
+	for (const options of [
+		{ auth: async () => undefined },
+		{ auth: async () => ({ source: "API key", auth: { apiKey: "synthetic-body-secret" } }) },
+		{ auth: async () => oauth("bad\r\naccount") },
+		{ auth: async () => { throw new Error("synthetic-body-secret"); } },
+		{ transport: async () => new Response("", { status: 429 }) },
+		{ resetTransport: async () => new Response("", { status: 429 }) },
+		{ resetTransport: async () => Response.json({ available_count: 2 }) },
+	]) {
+		const h = harness(options);
+		await h.controller.useResetCredit(resetUI());
+		await h.controller.useResetCredit(resetUI());
+		assert.equal(h.consumeRequests.length, 0);
+		h.controller.dispose();
+	}
+	let fail = false;
+	const h = harness({ resetTransport: async () => fail ? new Response("", { status: 500 }) : Response.json(resetPayload()) });
+	await h.controller.refresh();
+	fail = true;
+	await h.controller.useResetCredit(resetUI());
+	assert.equal(h.consumeRequests.length, 0);
+	assert.equal(h.controller.getState().resetCredits.stale, true);
+	h.controller.dispose();
+});
+
+test("consume result parser recognizes only official codes and valid windows_reset", () => {
+	for (const code of ["reset", "nothing_to_reset", "no_credit", "already_redeemed"]) {
+		assert.deepEqual(parseConsumeResult({ code }), { code, windowsReset: null });
+	}
+	for (const data of [{}, null, { code: "synthetic-body-secret" }, { code: "reset", windows_reset: -1 }, { code: "reset", windows_reset: "2" }]) assert.throws(() => parseConsumeResult(data));
+});
+
+test("all official outcomes are distinguished and never fabricate quotas/card counts", async () => {
+	const expected = { reset: /确认重置成功/, nothing_to_reset: /无需重置/, no_credit: /无可用重置卡/, already_redeemed: /不代表此次又成功重置/ };
+	for (const [code, message] of Object.entries(expected)) {
+		const h = harness({ consumeTransport: async () => Response.json({ code }) });
+		const ui = resetUI();
+		await h.controller.useResetCredit(ui);
+		assert.match(ui.notices.at(-1).message, message);
+		assert.equal(h.consumeRequests.length, 1);
+		assert.equal(h.controller.getState().snapshot.windows[0].remainingPercent, 78);
+		assert.equal(h.controller.getState().resetCredits.snapshot.availableCount, 2);
+		if (code === "reset" || code === "already_redeemed") {
+			await h.controller.useResetCredit(resetUI());
+			assert.equal(h.consumeRequests.length, 1, "stale available record must not allow a second POST");
+		}
+		assertResetSanitized(h, ui);
+		h.controller.dispose();
+	}
+});
+
+test("HTTP auth rejection clears caches, while 429 honors consumption cooldown", async () => {
+	for (const status of [401, 403, 429]) {
+		const h = harness({ consumeTransport: async () => new Response("synthetic-body-secret", { status, headers: { "Retry-After": "120" } }) });
+		const ui = resetUI();
+		await h.controller.useResetCredit(ui);
+		assert.equal(h.consumeRequests.length, 1);
+		assert.match(ui.notices.at(-1).message, new RegExp(`HTTP ${status}`));
+		if (status === 429) {
+			assert.equal(h.requests.length, 3, "429 still permits read-only reconciliation");
+			await h.controller.useResetCredit(resetUI());
+			await h.controller.refresh(true);
+			await h.controller.useResetCredit(resetUI());
+			assert.equal(h.consumeRequests.length, 1);
+			h.advance(120_000);
+			await h.controller.useResetCredit(resetUI());
+			assert.equal(h.consumeRequests.length, 2, "a new explicit confirmation may consume after cooldown");
+		} else {
+			assert.equal(h.controller.getState().phase, "auth_error");
+			assert.equal(h.controller.getState().snapshot, null);
+			assert.equal(h.controller.getState().resetCredits.snapshot, null);
+		}
+		assertResetSanitized(h, ui);
+		h.controller.dispose();
+	}
+});
+
+test("ambiguous 5xx, network and malformed 2xx stay locked, with no automatic POST retry", async () => {
+	for (const consumeTransport of [
+		async () => new Response("synthetic-body-secret", { status: 500 }),
+		async () => { throw new Error("synthetic-body-secret"); },
+		async () => Response.json({ code: "synthetic-body-secret" }),
+		async () => new Response("synthetic-body-secret", { status: 200 }),
+	]) {
+		const h = harness({ consumeTransport });
+		const ui = resetUI();
+		await h.controller.useResetCredit(ui);
+		assert.match(ui.notices.at(-1).message, /结果不确定/);
+		await h.controller.refresh(true);
+		h.advance(60_000);
+		await h.controller.refresh();
+		await h.controller.useResetCredit(resetUI());
+		assert.equal(h.consumeRequests.length, 1);
+		assertResetSanitized(h, ui);
+		h.controller.dispose();
+	}
+});
+
+test("unknown outcome remains locked across pending records and account switching", async () => {
+	let id = "synthetic-account-A";
+	let status = "available";
+	const h = harness({ auth: async () => oauth(id), consumeTransport: async () => new Response("", { status: 502 }), resetTransport: async () => { const data = resetPayload(); data.credits[0].status = status; return Response.json(data); } });
+	await h.controller.useResetCredit(resetUI());
+	status = "pending";
+	await h.controller.refresh(true);
+	status = "available";
+	id = "synthetic-account-B";
+	await h.controller.refresh(true);
+	id = "synthetic-account-A";
+	await h.controller.refresh(true);
+	await h.controller.useResetCredit(resetUI());
+	assert.equal(h.consumeRequests.length, 1);
+	status = "redeemed";
+	await h.controller.refresh(true);
+	assert.equal(h.controller.getState().resetCredits.snapshot.credits[0].status, "used");
+	h.controller.dispose();
+});
+
+test("success and uncertain results keep old data stale when reconciliation fails", async () => {
+	for (const code of ["reset", "unknown"]) {
+		let sent = false;
+		const h = harness({
+			consumeTransport: async () => { sent = true; return Response.json({ code }); },
+			transport: async () => sent ? new Response("", { status: 500 }) : Response.json(payload()),
+		});
+		const ui = resetUI();
+		await h.controller.useResetCredit(ui);
+		const state = h.controller.getState();
+		assert.equal(state.stale, true);
+		assert.equal(state.resetCredits.stale, true);
+		assert.equal(state.snapshot.windows[0].remainingPercent, 78);
+		assert.match(ui.notices.at(-1).message, /数据同步未完成/);
+		assert.match(ui.notices.at(-1).message, code === "reset" ? /确认重置成功/ : /结果不确定/);
+		await h.controller.useResetCredit(resetUI());
+		assert.equal(h.consumeRequests.length, 1);
+		h.controller.dispose();
+	}
+});
+
+test("consume timeout settles transports ignoring AbortSignal and blocks subsequent dispatch", async () => {
+	const timeout = new AbortController();
+	let timeouts = 0;
+	const h = harness({ consumeTransport: () => new Promise(() => {}), timeoutSignal: () => ++timeouts === 5 ? timeout.signal : new AbortController().signal });
+	const ui = resetUI();
+	const operation = h.controller.useResetCredit(ui);
+	await tick();
+	assert.equal(h.consumeRequests.length, 1);
+	timeout.abort(new Error("synthetic-body-secret"));
+	await operation;
+	assert.equal(h.consumeRequests[0].init.signal.aborted, true);
+	assert.match(ui.notices.at(-1).message, /结果不确定/);
+	await h.controller.useResetCredit(resetUI());
+	assert.equal(h.consumeRequests.length, 1);
+	assertResetSanitized(h, ui);
+	h.controller.dispose();
+});
+
+test("account/logout/card changes and expiry during confirmation cancel without replacing card", async () => {
+	for (const change of ["account", "logout", "card", "expiry"]) {
+		let id = "synthetic-account-A";
+		let valid = true;
+		let loggedIn = true;
+		const h = harness({ auth: async () => loggedIn ? oauth(id) : undefined, resetTransport: async () => { const data = resetPayload(); if (!valid) data.credits[0].status = "redeemed"; return Response.json(data); } });
+		const ui = resetUI({ onSelect: async (count) => {
+			if (count === 2) {
+				if (change === "account") id = "synthetic-account-B";
+				if (change === "logout") loggedIn = false;
+				if (change === "card") valid = false;
+				if (change === "expiry") h.advance(30 * 86400_000);
+			}
+		} });
+		await h.controller.useResetCredit(ui);
+		assert.equal(h.consumeRequests.length, 0);
+		h.controller.dispose();
+	}
+	for (const mode of ["switch", "throw"]) {
+		let authCalls = 0;
+		const h = harness({ auth: async () => {
+			if (++authCalls === 3) {
+				if (mode === "throw") throw new Error("synthetic-body-secret");
+				return oauth("synthetic-account-B");
+			}
+			return oauth();
+		} });
+		const ui = resetUI();
+		await h.controller.useResetCredit(ui);
+		assert.equal(h.consumeRequests.length, 0, "final request-time auth must also match confirmed account");
+		assert.equal(h.controller.getState().phase, "auth_error");
+		assert.equal(h.controller.getState().snapshot, null);
+		assertResetSanitized(h, ui);
+		h.controller.dispose();
+	}
+});
+
+test("single-flight covers selection, confirmation and POST while polls cannot overwrite it", async () => {
+	const waitSelection = deferred();
+	const waitPost = deferred();
+	const h = harness({ consumeTransport: () => waitPost.promise });
+	const ui = resetUI({ onSelect: async (count) => { if (count === 1) await waitSelection.promise; } });
+	const first = h.controller.useResetCredit(ui);
+	await tick();
+	const repeatUI = resetUI();
+	await h.controller.useResetCredit(repeatUI);
+	await h.controller.refresh(true);
+	assert.equal(h.requests.length, 1);
+	assert.equal(repeatUI.dialogs.length, 0);
+	assert.match(repeatUI.notices[0].message, /正在进行/);
+	waitSelection.resolve();
+	await tick();
+	assert.equal(h.consumeRequests.length, 1);
+	await h.controller.refresh(true);
+	assert.equal(h.requests.length, 2);
+	await h.controller.useResetCredit(resetUI());
+	assert.equal(h.consumeRequests.length, 1);
+	waitPost.resolve(Response.json({ code: "reset" }));
+	await first;
+	assert.equal(h.requests.length, 3);
+	h.controller.dispose();
+});
+
+test("an existing refresh completes before reset preparation; no stale refresh races POST", async () => {
+	const waiting = deferred();
+	let first = true;
+	const h = harness({ transport: async () => { if (first) { first = false; return waiting.promise; } return Response.json(payload()); } });
+	const refresh = h.controller.refresh();
+	await tick();
+	const use = h.controller.useResetCredit(resetUI());
+	await tick();
+	assert.equal(h.consumeRequests.length, 0);
+	waiting.resolve(Response.json(payload()));
+	await Promise.all([refresh, use]);
+	assert.equal(h.consumeRequests.length, 1);
+	assert.equal(h.requests.length, 4);
+	h.controller.dispose();
+});
+
+test("shutdown settles waiting dialogs/auth/POST and ignores late results", async () => {
+	for (const stage of ["dialog", "auth", "post"]) {
+		const waiting = deferred();
+		const h = harness({
+			auth: stage === "auth" ? () => waiting.promise : async () => oauth(),
+			consumeTransport: stage === "post" ? () => waiting.promise : undefined,
+		});
+		const ui = resetUI({ onSelect: stage === "dialog" ? () => waiting.promise : undefined });
+		const use = h.controller.useResetCredit(ui);
+		await tick();
+		const changesBefore = h.changes.length;
+		h.controller.dispose();
+		await use;
+		waiting.resolve(stage === "auth" ? oauth() : Response.json({ code: "reset" }));
+		await tick();
+		assert.equal(h.changes.length, changesBefore);
+		assert.equal(h.controller.getState().snapshot, null);
+		assert.equal(ui.notices.length, 0);
+		assert.equal(h.consumeRequests.length, stage === "post" ? 1 : 0);
+		if (stage === "post") assert.equal(h.consumeRequests[0].init.signal.aborted, true);
+	}
 });

@@ -1,6 +1,9 @@
+import { randomUUID } from "node:crypto";
+
 export const PROVIDER = "openai-codex";
 export const API_URL = "https://chatgpt.com/backend-api/wham/usage";
 export const RESET_CREDITS_URL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
+export const CONSUME_RESET_URL = `${RESET_CREDITS_URL}/consume`;
 export const THROTTLE_MS = 30_000;
 export const TIMEOUT_MS = 10_000;
 export const POLL_MS = 60_000;
@@ -66,6 +69,50 @@ export interface QuotaState {
 	retryAt: number | null;
 	error: QuotaError | null;
 	resetCredits?: ResetCreditsState;
+	resetUse?: { message: string; warning: boolean };
+}
+
+export interface ResetButtonState {
+	phase: "ready" | "disabled" | "busy";
+	enabled: boolean;
+	hint: string;
+}
+
+/** User-only dialogs; no model-callable consumption tool. */
+export interface ResetCreditUI {
+	select: (title: string, options: string[]) => Promise<string | undefined>;
+	notify: (message: string, type: "info" | "warning") => void;
+}
+
+interface PrivateResetCredit {
+	id: string;
+	index: number;
+	card: ResetCredit;
+	eligible: boolean;
+}
+
+export function parseConsumeResult(payload: unknown): { code: "reset" | "nothing_to_reset" | "no_credit" | "already_redeemed"; windowsReset: number | null } {
+	if (!isRecord(payload) || !["reset", "nothing_to_reset", "no_credit", "already_redeemed"].includes(payload.code as string)) throw new QuotaDataError();
+	const windowsReset = optionalCount(payload.windows_reset);
+	if (payload.windows_reset != null && windowsReset === null) throw new QuotaDataError();
+	return { code: payload.code as "reset" | "nothing_to_reset" | "no_credit" | "already_redeemed", windowsReset };
+}
+
+/** IDs stay in controller-private memory, never in snapshots or UI values. */
+function privateResetCredits(payload: unknown, snapshot: ResetCreditsSnapshot): PrivateResetCredit[] {
+	if (!isRecord(payload)) return [];
+	const data = isRecord(payload.data) ? payload.data : payload;
+	if (!Array.isArray(data.credits)) return [];
+	const counts = new Map<string, number>();
+	for (const row of data.credits) {
+		if (isRecord(row) && typeof row.id === "string") counts.set(row.id, (counts.get(row.id) ?? 0) + 1);
+	}
+	return data.credits.flatMap((row, index) => {
+		const card = snapshot.credits?.[index];
+		if (!isRecord(row) || !card || typeof row.id !== "string" || !/^[A-Za-z0-9_-]{1,256}$/.test(row.id) || counts.get(row.id) !== 1) return [];
+		return [{ id: row.id, index, card, eligible: card.fullReset && card.status === "available"
+			&& (row.expires_at == null || card.expiresAt !== null) }];
+	});
 }
 
 /** Only request-time auth; never read or retain a refresh token. */
@@ -236,6 +283,13 @@ export class QuotaController {
 	private rateLimitUntil = 0;
 	private resetRetryAt = 0;
 	private resetRateLimitUntil = 0;
+	private creditRows: PrivateResetCredit[] = [];
+	private cardsRevision = 0;
+	private accountEpoch = 0;
+	private resetFlow: AbortController | null = null;
+	private consumeRateLimitUntil = 0;
+	// Account-scoped locks survive switching away and back, but not disposal/reload.
+	private blockedCredits = new Map<string, Set<string>>();
 
 	constructor(options: ControllerOptions) {
 		this.options = options;
@@ -253,6 +307,7 @@ export class QuotaController {
 		return {
 			...this.state,
 			error: this.state.error ? { ...this.state.error } : null,
+			resetUse: this.state.resetUse ? { ...this.state.resetUse } : undefined,
 			resetCredits: this.state.resetCredits ? {
 				...this.state.resetCredits,
 				error: this.state.resetCredits.error ? { ...this.state.resetCredits.error } : null,
@@ -268,7 +323,28 @@ export class QuotaController {
 		};
 	}
 
+	/** Presentation only: never resolves auth or sends a request. */
+	getResetButton(): ResetButtonState {
+		const disabled = (hint: string): ResetButtonState => ({ phase: "disabled", enabled: false, hint });
+		if (this.disposed) return disabled("会话已结束");
+		if (this.options.offline) return disabled("离线模式，不能使用重置卡");
+		if (this.resetFlow) return { phase: "busy", enabled: false, hint: "正在处理，请勿重复操作" };
+		if (this.now() < Math.max(this.rateLimitUntil, this.resetRateLimitUntil, this.consumeRateLimitUntil)) return disabled("限流冷却中，请稍后刷新");
+		if (this.state.phase === "loading") return disabled("正在查询额度与卡片…");
+		if (!this.accountId) return disabled(this.state.phase === "idle" ? "尚未获取卡片明细" : "请先 /login openai-codex");
+		if (this.state.phase !== "ready" || this.state.stale || this.state.resetCredits?.stale || this.state.resetCredits?.error
+			|| !this.state.resetCredits?.snapshot) return disabled("数据不可用，请先刷新明细");
+		const count = this.creditRows.filter((row) => this.canUse(row, this.accountId!)).length;
+		if (!count) return disabled("无可用卡，或卡片已到期 / 结果未决");
+		return { phase: "ready", enabled: true, hint: `可选 ${count} 张 · 选卡后确认，不会自动消费` };
+	}
+
 	refresh(force = false): Promise<QuotaState> {
+		if (this.resetFlow) return Promise.resolve(this.getState());
+		return this.refreshUnlocked(force);
+	}
+
+	private refreshUnlocked(force = false): Promise<QuotaState> {
 		if (this.disposed) return Promise.resolve(this.getState());
 		if (this.options.offline) {
 			this.publish();
@@ -296,13 +372,168 @@ export class QuotaController {
 		return this.inflight;
 	}
 
+	/** Called only after the detail panel yields its u action. Entire flow is single-flight. */
+	async useResetCredit(ui?: ResetCreditUI): Promise<void> {
+		if (!ui || this.disposed) return;
+		if (this.options.offline) { ui.notify("离线模式：不会查询或使用重置卡。", "warning"); return; }
+		if (this.resetFlow) { ui.notify("重置卡操作正在进行，请勿重复触发。", "warning"); return; }
+		const flow = new AbortController();
+		this.resetFlow = flow;
+		try {
+			if (this.inflight) await withAbort(this.inflight, flow.signal);
+			if (!await this.freshForReset(flow)) {
+				if (!this.disposed) ui.notify("无法获取新鲜额度与卡片明细；请检查登录、网络或限流冷却。未使用重置卡。", "warning");
+				return;
+			}
+			const epoch = this.accountEpoch;
+			const account = this.accountId!;
+			const choices = this.creditRows.filter((row) => this.canUse(row, account));
+			if (!choices.length) {
+				ui.notify("没有可安全使用的重置卡（可能已到期、结果未决或明细不完整）。", "warning");
+				return;
+			}
+			const labels = choices.map((row) => `#${row.index + 1} 完全重置（7d + 5h） · 到期：${localTime(row.card.expiresAt)}`);
+			const selection = await withAbort(ui.select("选择一张重置卡（Esc 取消）", labels), flow.signal);
+			if (!this.flowCurrent(flow, epoch)) return;
+			const selected = choices[labels.indexOf(selection ?? "")];
+			if (!selected) return;
+			const confirm = "确认使用这张卡";
+			const quota = this.state.snapshot!.windows.map((window) => `${windowLabel(window)} 剩${percentage(window.remainingPercent)}%`).join(" · ") || "额度未知";
+			const answer = await withAbort(ui.select(`使用 ${labels[choices.indexOf(selected)]}？\n当前：${quota}\n会消耗一张卡，不可撤销；不会自动重试。`, ["取消", confirm]), flow.signal);
+			if (!this.flowCurrent(flow, epoch) || answer !== confirm) return;
+			// Re-read auth AND card state after confirmation. Never replace the selected ID.
+			if (!await this.freshForReset(flow) || !this.flowCurrent(flow, epoch)) {
+				if (!this.disposed) ui.notify("账号或明细已变化/查询失败，已取消；请重新选择。未使用重置卡。", "warning");
+				return;
+			}
+			const current = this.creditRows.find((row) => row.id === selected.id);
+			if (!current || !this.canUse(current, account)) {
+				ui.notify("所选卡片已失效或状态变化，未使用重置卡。", "warning"); return;
+			}
+			await this.consumeSelected(current, account, epoch, flow, ui);
+		} catch {
+			if (!this.disposed && !flow.signal.aborted) ui.notify("重置卡操作未完成；未自动重试，请刷新并核对官方用量页。", "warning");
+		} finally {
+			if (this.resetFlow === flow) this.resetFlow = null;
+		}
+	}
+
+	private flowCurrent(flow: AbortController, epoch: number): boolean {
+		return !this.disposed && !flow.signal.aborted && this.resetFlow === flow && this.accountEpoch === epoch;
+	}
+
+	private canUse(row: PrivateResetCredit, account: string): boolean {
+		return row.eligible && (row.card.expiresAt === null || row.card.expiresAt > this.now())
+			&& !this.blockedCredits.get(account)?.has(row.id);
+	}
+
+	private async freshForReset(flow: AbortController): Promise<boolean> {
+		if (this.disposed || flow.signal.aborted || this.now() < this.rateLimitUntil || this.now() < this.resetRateLimitUntil
+			|| this.now() < this.consumeRateLimitUntil) return false;
+		const revision = this.cardsRevision;
+		await withAbort(this.refreshUnlocked(true), flow.signal);
+		return !this.disposed && !flow.signal.aborted && this.cardsRevision > revision
+			&& this.state.phase === "ready" && !this.state.stale && !this.state.resetCredits?.stale
+			&& !this.state.resetCredits?.error && this.accountId !== null;
+	}
+
+	private async consumeSelected(row: PrivateResetCredit, account: string, epoch: number, flow: AbortController, ui: ResetCreditUI): Promise<void> {
+		let sent = false;
+		let message = "消费结果不确定；不会重发，请核对官方用量页。";
+		let warning = true;
+		let sync = false;
+		const blocked = this.blockedCredits.get(account) ?? new Set<string>();
+		this.blockedCredits.set(account, blocked);
+		try {
+			const auth = await withAbort(this.options.resolveAuth(), flow.signal);
+			if (!this.flowCurrent(flow, epoch)) return;
+			const token = auth?.auth?.apiKey;
+			if (auth?.source !== "OAuth" || !token || extractAccountId(token) !== account) {
+				this.clearAccount();
+				this.fail("auth_error", { kind: "auth" });
+				ui.notify("登录或账号已变化，未使用重置卡；请重新登录/选择。", "warning"); return;
+			}
+			if (!this.canUse(row, account) || this.now() < this.consumeRateLimitUntil) {
+				ui.notify("卡片已到期、结果未决或正在冷却，未使用重置卡。", "warning"); return;
+			}
+			const signal = AbortSignal.any([flow.signal, (this.options.timeoutSignal ?? AbortSignal.timeout)(TIMEOUT_MS)]);
+			signal.throwIfAborted();
+			const body = JSON.stringify({ redeem_request_id: randomUUID(), credit_id: row.id });
+			blocked.add(row.id); // Before dispatch: any ambiguous result must stay locked.
+			sent = true;
+			this.state.resetUse = { message: "正在使用重置卡…", warning: false };
+			this.markResetStale();
+			this.publish();
+			const response = await withAbort(this.fetch(CONSUME_RESET_URL, {
+				method: "POST", redirect: "error", signal,
+				headers: { Authorization: `Bearer ${token}`, "ChatGPT-Account-Id": account, Accept: "application/json", "Content-Type": "application/json" }, body,
+			}), signal);
+			if (!this.flowCurrent(flow, epoch)) return;
+			if (!response.ok) {
+				void response.body?.cancel().catch(() => {});
+				if (response.status >= 400 && response.status < 500 && response.status !== 408) {
+					blocked.delete(row.id);
+					message = `消费请求被拒绝（HTTP ${response.status}），不会自动重试。`;
+					if (response.status === 429) this.consumeRateLimitUntil = Math.max(this.now() + THROTTLE_MS,
+						parseRetryAfter(response.headers.get("Retry-After"), this.now()) ?? this.now() + BACKOFF_MS);
+					if (response.status === 401 || response.status === 403) {
+						this.clearAccount();
+						this.fail("auth_error", { kind: "http_auth", httpStatus: response.status });
+						ui.notify(`${message} 请重新 /login openai-codex。`, "warning"); return;
+					}
+				}
+			} else {
+				const result = parseConsumeResult(await withAbort(response.json(), signal));
+				if (!this.flowCurrent(flow, epoch)) return;
+				if (result.code === "reset") {
+					message = `服务端确认重置成功${result.windowsReset === null ? "" : `（${result.windowsReset} 个窗口）`}。`;
+					warning = false;
+				} else if (result.code === "nothing_to_reset") {
+					blocked.delete(row.id); message = "服务端返回无需重置（nothing_to_reset），未确认重置成功。";
+				} else if (result.code === "no_credit") {
+					blocked.delete(row.id); message = "服务端返回无可用重置卡（no_credit）。";
+				} else message = "服务端返回卡片已兑换（already_redeemed），不代表此次又成功重置。";
+			}
+		} catch {
+			if (!sent) {
+				if (!this.flowCurrent(flow, epoch)) return;
+				this.clearAccount();
+				this.fail("auth_error", { kind: "auth" });
+				ui.notify("消费前认证或准备失败，未发送消费请求。", "warning"); return;
+			}
+			// Never echo exception/body or retry an ambiguous POST.
+		}
+		if (!this.flowCurrent(flow, epoch)) return;
+		if (sent) {
+			this.markResetStale();
+			// Consumption cooldown blocks more consumption, not read-only reconciliation.
+			const revision = this.cardsRevision;
+			await withAbort(this.refreshUnlocked(true), flow.signal);
+			if (!this.flowCurrent(flow, epoch)) return;
+			sync = this.cardsRevision > revision && this.state.phase === "ready" && !this.state.stale
+				&& !this.state.resetCredits?.stale && !this.state.resetCredits?.error;
+		}
+		this.state.resetUse = { message: `${message}${sync ? " 已重新查询额度与卡片。" : " 数据同步未完成，缓存不是当前额度。"}`, warning: warning || !sync };
+		this.publish();
+		ui.notify(this.state.resetUse.message, this.state.resetUse.warning ? "warning" : "info");
+	}
+
+	private markResetStale(): void {
+		this.state.stale = this.state.snapshot !== null;
+		if (this.state.resetCredits) this.state.resetCredits.stale = this.state.resetCredits.snapshot !== null;
+	}
+
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
 		this.generation++;
 		this.request?.abort();
+		this.resetFlow?.abort();
+		this.creditRows = [];
+		this.blockedCredits.clear();
+		this.accountEpoch++;
 		this.accountId = null;
-		this.state = { ...this.state, phase: "idle", snapshot: null, lastSuccessAt: null, stale: false, error: null, retryAt: null, resetCredits: { snapshot: null, stale: false, error: null, retryAt: null } };
+		this.state = { ...this.state, phase: "idle", snapshot: null, lastSuccessAt: null, stale: false, error: null, retryAt: null, resetUse: undefined, resetCredits: { snapshot: null, stale: false, error: null, retryAt: null } };
 	}
 
 	private current(generation: number): boolean {
@@ -316,10 +547,12 @@ export class QuotaController {
 	}
 
 	private clearAccount(): void {
+		this.accountEpoch++;
+		this.creditRows = [];
 		this.accountId = null;
 		this.resetRetryAt = 0;
 		this.resetRateLimitUntil = 0;
-		this.state = { ...this.state, snapshot: null, lastSuccessAt: null, stale: false, resetCredits: { snapshot: null, stale: false, error: null, retryAt: null } };
+		this.state = { ...this.state, snapshot: null, lastSuccessAt: null, stale: false, resetUse: undefined, resetCredits: { snapshot: null, stale: false, error: null, retryAt: null } };
 	}
 
 	private fail(phase: QuotaPhase, error: QuotaError, retryAt?: number): void {
@@ -367,6 +600,12 @@ export class QuotaController {
 			catch { signal.throwIfAborted(); throw new QuotaDataError(); }
 			const snapshot = parseResetCredits(payload, this.now());
 			if (!this.current(generation)) return;
+			this.creditRows = privateResetCredits(payload, snapshot);
+			this.cardsRevision++;
+			const blocked = this.blockedCredits.get(accountId);
+			for (const row of this.creditRows) {
+				if (row.card.status === "used" || row.card.status === "expired") blocked?.delete(row.id);
+			}
 			this.resetRetryAt = 0;
 			this.resetRateLimitUntil = 0;
 			this.state.resetCredits = { snapshot, stale: false, error: null, retryAt: null };
@@ -522,12 +761,12 @@ export function statusLine(state: QuotaState, now: number): { text: string; colo
 		return { text, color: state.error ? "warning" : "dim" };
 	}
 	const marker = state.stale ? "[过期]" : state.phase === "loading" ? "[更新中]" : "";
-	const windows = snapshot.windows.map((window) => `${windowLabel(window)} ${percentage(window.remainingPercent)}%`);
+	const windows = snapshot.windows.map((window) => `${windowLabel(window)} ${percentage(window.remainingPercent)}% ↻${resetRemaining(window.resetAt, now)}`);
 	const restricted = snapshot.allowed === false || snapshot.limitReached === true;
 	const expired = snapshot.windows.some((window) => window.resetAt !== null && window.resetAt <= now);
 	const minimum = Math.min(...snapshot.windows.map((window) => window.remainingPercent));
 	const subscription = snapshot.plan ? `${snapshot.plan[0].toUpperCase()}${snapshot.plan.slice(1)}` : "套餐未知";
-	const text = `🦖 Codex${marker} 额度：( ${subscription} | ${windows.join(" ") || "暂无主额度数据"}${restricted ? " | 受限" : ""} )`;
+	const text = `🦖 Codex${marker} 额度：( ${subscription} | ${windows.join("  ") || "暂无主额度数据"}${restricted ? " | 受限" : ""} )`;
 	const color = state.stale || expired ? "warning" : state.phase === "loading" ? "accent"
 		: restricted || minimum === 0 ? "error" : minimum <= 10 ? "warning" : windows.length ? "success" : "dim";
 	return { text, color };
@@ -540,26 +779,32 @@ function localTime(timestamp: number | null): string {
 	return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
+export function isLowQuota(remainingPercent: number): boolean {
+	return remainingPercent <= 20;
+}
+
 export function quotaBar(remaining: number, width = 20): string {
 	const columns = Math.max(1, Math.min(30, Math.floor(width)));
 	const filled = Math.max(0, Math.min(columns, Math.round(remaining / 100 * columns)));
 	return "█".repeat(filled) + "░".repeat(columns - filled);
 }
 
-export function detailLines(state: QuotaState, now: number, barWidth = 20): string[] {
+export function detailLines(state: QuotaState, now: number, barWidth = 20, formatQuota?: (line: string, window: QuotaWindow) => string): string[] {
 	if (state.phase === "offline") return ["离线模式：未解析认证，未发起额度请求。", "取消 PI_OFFLINE / --offline 后重新启动 pi。"];
 	if (state.phase === "not_logged_in") return ["尚未登录 openai-codex。", "请在 pi 中执行 /login openai-codex。"];
 	const lines: string[] = [];
 	if (state.phase === "loading") lines.push("正在刷新…");
 	if (state.error) lines.push(errorDescription(state.error));
 	if (state.stale) lines.push("以下为过期缓存，不代表当前剩余额度。");
+	if (state.resetUse) lines.push(state.resetUse.message);
 	const snapshot = state.snapshot;
 	if (snapshot) {
 		lines.push(`${snapshot.plan?.toUpperCase() ?? "未知套餐"}  ·  ${snapshot.allowed === false || snapshot.limitReached === true ? "受限" : snapshot.allowed === true ? "可用" : "状态未知"}`);
 		lines.push("", "▸ 订阅额度");
 		if (!snapshot.windows.length) lines.push("服务端未提供主额度窗口（不等于 0% 或无限额度）。");
 		for (const window of snapshot.windows) {
-			lines.push(`${windowLabel(window)}  ${quotaBar(window.remainingPercent, barWidth)}  剩${percentage(window.remainingPercent)}% · 已用${percentage(window.usedPercent)}%`);
+			const line = `${windowLabel(window)}  ${quotaBar(window.remainingPercent, barWidth)}  剩${percentage(window.remainingPercent)}% · 已用${percentage(window.usedPercent)}%`;
+			lines.push(formatQuota ? formatQuota(line, window) : line);
 			const countdown = resetRemaining(window.resetAt, now);
 			lines.push(`  ↻ ${countdown}${window.resetAt !== null && window.resetAt > now ? " 后重置" : ""} · ${localTime(window.resetAt)}`);
 		}
@@ -573,10 +818,6 @@ export function detailLines(state: QuotaState, now: number, barWidth = 20): stri
 		}
 		const cards = reset?.snapshot?.credits;
 		if (cards) {
-			const used = cards.filter((card) => card.status === "used").length;
-			const expired = cards.filter((card) => card.status === "expired").length;
-			lines.push(`  返回记录：已用 ${used} 张 · 已过期 ${expired} 张`);
-			if (reset?.snapshot?.totalEarnedCount != null) lines.push(`  累计获得：${reset.snapshot.totalEarnedCount} 张`);
 			if (!cards.length) lines.push("  暂无卡片记录");
 			const labels = { available: "可用", used: "已使用", expired: "已过期", pending: "使用中", unknown: "状态未知" };
 			cards.forEach((card, index) => {
@@ -590,8 +831,7 @@ export function detailLines(state: QuotaState, now: number, barWidth = 20): stri
 			lines.push("  仅显示接口返回记录，不推断完整历史。");
 		} else lines.push("  未提供使用记录 / 有效期明细");
 		if (reset?.retryAt != null && reset.retryAt > now) lines.push(`  重置卡重试：${resetRemaining(reset.retryAt, now)}后`);
-		lines.push("  只读查询，不会使用重置卡。", "", `更新：${localTime(state.lastSuccessAt)} · 本机时区`);
-		if (reset?.snapshot) lines.push(`卡片更新：${localTime(reset.snapshot.receivedAt)}${reset.stale ? " [过期缓存]" : ""}`);
+		lines.push("", `更新：${localTime(state.lastSuccessAt)} · 本机时区`);
 	}
 	if (state.retryAt !== null && state.retryAt > now) lines.push(`${state.phase === "rate_limited" ? "限流冷却" : "自动重试"}：${resetRemaining(state.retryAt, now)}后`);
 	return lines.length ? lines : ["暂无额度数据。"];
