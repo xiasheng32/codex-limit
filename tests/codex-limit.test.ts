@@ -201,7 +201,7 @@ test("reset cards parse known metadata and discard all account/credit secrets", 
 	assert.equal(present(cards.credits)[0].expiresAt, Date.parse("2026-10-22T21:00:00Z"));
 	assert.equal(present(cards.credits)[2].redeemedAt, Date.parse("2026-10-01T12:00:00Z"));
 	const state = { ...ready(parseQuota(payload(), NOW)), resetCredits: { snapshot: cards, stale: false, error: null, retryAt: null } };
-	assert.equal(statusLine(state, NOW).text, "🦖 Codex 额度：( Plus | 5h 78% ↻2h  7d 64% ↻3d )");
+	assert.equal(statusLine(state, NOW).text, "🦖 Codex 额度：5h 78% (↻2h) 7d 64% (↻3d)");
 	const detail = detailLines(state, NOW).join("\n");
 	assert.match(detail, /可用 2 张/);
 	assert.doesNotMatch(detail, /返回记录：|累计获得：|卡片更新：/);
@@ -378,7 +378,7 @@ test("22% used becomes 78% remaining; reset_at is Unix seconds", () => {
 	const snapshot = parseQuota(payload(), NOW);
 	assert.deepEqual(snapshot.windows.map((window) => window.remainingPercent), [78, 64]);
 	assert.equal(snapshot.windows[0].resetAt, NOW + 7200_000);
-	assert.equal(statusLine(ready(snapshot), NOW).text, "🦖 Codex 额度：( Plus | 5h 78% ↻2h  7d 64% ↻3d )");
+	assert.equal(statusLine(ready(snapshot), NOW).text, "🦖 Codex 额度：5h 78% (↻2h) 7d 64% (↻3d)");
 	assert.match(detailLines(ready(snapshot), NOW).join("\n"), /7d .*剩64%/);
 });
 
@@ -389,42 +389,42 @@ test("HUD shows a reset countdown for each window while preserving percentages a
 	data.rate_limit.secondary_window.used_percent = 4;
 	data.rate_limit.secondary_window.reset_at = NOW / 1000 + (6 * 24 + 19) * 3600;
 	const state = ready(parseQuota(data, NOW));
-	assert.equal(statusLine(state, NOW).text, "🦖 Codex 额度：( Plus | 5h 76% ↻11m  7d 96% ↻6d19h )");
+	assert.equal(statusLine(state, NOW).text, "🦖 Codex 额度：5h 76% (↻11m) 7d 96% (↻6d19h)");
 	assert.match(detailLines(state, NOW).join("\n"), /↻ 11m 后重置/);
 	assert.match(detailLines(state, NOW).join("\n"), /↻ 6d19h 后重置/);
-	assert.match(statusLine({ ...state, phase: "loading" }, NOW).text, /^🦖 Codex\[更新中\] 额度：\(/);
-	assert.match(statusLine({ ...state, snapshot: { ...state.snapshot, allowed: false } }, NOW).text, / \| 受限 \)$/);
+	assert.match(statusLine({ ...state, phase: "loading" }, NOW).text, /^🦖 Codex\[更新中\] 额度：/);
+	assert.match(statusLine({ ...state, snapshot: { ...state.snapshot, allowed: false } }, NOW).text, / \| 受限$/);
 });
 
-test("HUD displays the live plan, quota percentages and countdowns", () => {
+test("HUD omits the plan and outer parentheses; details retain the live plan", () => {
 	const data = payload();
-	data.rate_limit.primary_window.used_percent = 13;
-	data.rate_limit.primary_window.reset_at = NOW / 1000 + (4 * 60 + 34) * 60;
-	data.rate_limit.secondary_window.used_percent = 7;
-	data.rate_limit.secondary_window.reset_at = NOW / 1000 + (6 * 24 + 18) * 3600;
+	data.rate_limit.primary_window.used_percent = 4;
+	data.rate_limit.primary_window.reset_at = NOW / 1000 + (4 * 60 + 56) * 60;
+	data.rate_limit.secondary_window.used_percent = 13;
+	data.rate_limit.secondary_window.reset_at = NOW / 1000 + (6 * 24 + 12) * 3600;
 	data.rate_limit_reset_credits = { available_count: 2 };
-	assert.equal(statusLine(ready(parseQuota(data, NOW)), NOW).text,
-		"🦖 Codex 额度：( Plus | 5h 87% ↻4h34m  7d 93% ↻6d18h )");
-	data.plan_type = "pro";
-	data.rate_limit_reset_credits.available_count = 0;
-	assert.match(statusLine(ready(parseQuota(data, NOW)), NOW).text, /\( Pro \| 5h 87% ↻4h34m  7d 93% ↻6d18h \)/);
-	delete data.plan_type;
-	delete data.rate_limit_reset_credits;
-	assert.match(statusLine(ready(parseQuota(data, NOW)), NOW).text, /\( 套餐未知 \| 5h 87% ↻4h34m  7d 93% ↻6d18h \)/);
+	const expected = "🦖 Codex 额度：5h 96% (↻4h56m) 7d 87% (↻6d12h)";
+	for (const plan of ["plus", "pro", undefined]) {
+		if (plan === undefined) delete data.plan_type;
+		else data.plan_type = plan;
+		const state = ready(parseQuota(data, NOW));
+		assert.equal(statusLine(state, NOW).text, expected);
+		assert.match(detailLines(state, NOW)[0], plan === undefined ? /^未知套餐/ : new RegExp(`^${plan.toUpperCase()}`));
+	}
 });
 
 test("HUD still omits reset cards and subscription expiry", () => {
 	const state = { ...ready(parseQuota(payload(), NOW)), resetCredits: { snapshot: parseResetCredits(resetPayload(), NOW), stale: false, error: null, retryAt: null } };
 	assert.doesNotMatch(statusLine(state, NOW).text, /重置卡|订阅到期|->/);
-	assert.match(statusLine(state, NOW).text, /↻2h .*↻3d/);
+	assert.match(statusLine(state, NOW).text, /\(↻2h\) .*\(↻3d\)/);
 	assert.match(detailLines(state, NOW).join("\n"), /可用 2 张/);
 });
 
 test("HUD countdown advances with the supplied clock without changing cached percentages", () => {
 	const state = ready(parseQuota(payload(), NOW));
 	const original = structuredClone(state);
-	assert.equal(statusLine(state, NOW + 60_000).text, "🦖 Codex 额度：( Plus | 5h 78% ↻1h59m  7d 64% ↻2d23h )");
-	assert.equal(statusLine(state, NOW + 7200_000).text, "🦖 Codex 额度：( Plus | 5h 78% ↻待刷新  7d 64% ↻2d22h )");
+	assert.equal(statusLine(state, NOW + 60_000).text, "🦖 Codex 额度：5h 78% (↻1h59m) 7d 64% (↻2d23h)");
+	assert.equal(statusLine(state, NOW + 7200_000).text, "🦖 Codex 额度：5h 78% (↻待刷新) 7d 64% (↻2d22h)");
 	assert.equal(statusLine(state, NOW + 7200_000).color, "warning");
 	assert.deepEqual(state, original, "Rendering must not restore quotas or mutate snapshots");
 	assert.match(statusLine({ ...state, stale: true }, NOW).text, /^🦖 Codex\[过期\].*↻2h/);
@@ -437,7 +437,7 @@ test("HUD shows unknown or awaiting refresh for missing, due and past reset time
 	delete data.rate_limit.primary_window.reset_after_seconds;
 	data.rate_limit.secondary_window.reset_at = NOW / 1000;
 	const state = ready(parseQuota(data, NOW));
-	assert.equal(statusLine(state, NOW).text, "🦖 Codex 额度：( Plus | 5h 78% ↻未知  7d 64% ↻待刷新 )");
+	assert.equal(statusLine(state, NOW).text, "🦖 Codex 额度：5h 78% (↻未知) 7d 64% (↻待刷新)");
 	assert.equal(statusLine(state, NOW + 60_000).text, statusLine(state, NOW).text);
 	assert.equal(statusLine(state, NOW).color, "warning");
 });
@@ -452,7 +452,7 @@ test("a lone primary weekly window is not mislabeled 5h; extra quotas are not mi
 	const snapshot = parseQuota(weekly, NOW);
 	assert.equal(snapshot.windows.length, 1);
 	assert.equal(windowLabel(snapshot.windows[0]), "7d");
-	assert.equal(statusLine(ready(snapshot), NOW).text, "🦖 Codex 额度：( Plus | 7d 64% ↻3d )");
+	assert.equal(statusLine(ready(snapshot), NOW).text, "🦖 Codex 额度：7d 64% (↻3d)");
 	assert.doesNotMatch(statusLine(ready(snapshot), NOW).text, /5h|1%/);
 });
 
@@ -627,7 +627,7 @@ test("network failure preserves a visibly stale cache and backs off failed attem
 	assert.equal(quotaSnapshot(state).windows[0].remainingPercent, 78);
 	assert.equal(state.stale, true);
 	assert.equal(state.lastSuccessAt, NOW);
-	assert.match(statusLine(state, h.now).text, /^🦖 Codex\[过期\] 额度：\(/);
+	assert.match(statusLine(state, h.now).text, /^🦖 Codex\[过期\] 额度：/);
 	assertSanitized(state, "synthetic-network-secret");
 	h.advance(59_999);
 	await h.controller.refresh();

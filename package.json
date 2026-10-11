@@ -1,6 +1,6 @@
 {
   "name": "codex-limit",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Pi extension: 在页脚显示 Codex 订阅剩余额度与重置时间。",
   "type": "module",
   "keywords": [
