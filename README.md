@@ -1,5 +1,7 @@
 # codex-limit
 
+[简体中文](README.md) | [English](README.en.md)
+
 一个 [pi](https://pi.dev) 扩展：在页脚 HUD 显示 **Codex 剩余额度与重置倒计时**，详情保留套餐、重置时间和重置卡明细，复用 pi 的 `openai-codex` OAuth 登录。
 
 ```text
@@ -196,6 +198,7 @@ codex-limit/
 ├── package-lock.json             # 仓库开发依赖锁定
 ├── package.json
 ├── README.md
+├── README.en.md
 ├── .gitignore
 └── LICENSE
 ```

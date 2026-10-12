@@ -30,6 +30,7 @@
     "tests/sync-autoload.test.ts",
     "tsconfig.json",
     "README.md",
+    "README.en.md",
     "LICENSE"
   ],
   "pi": {
