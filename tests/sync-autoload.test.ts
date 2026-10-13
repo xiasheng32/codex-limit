@@ -11,7 +11,7 @@ const script = join(root, "scripts/sync-autoload.ts");
 
 async function expectedBundle(): Promise<string> {
 	const source = await readFile(join(root, "src/quota.ts"), "utf8");
-	const entry = await readFile(join(root, "extensions/codex-limit.ts"), "utf8");
+	const entry = await readFile(join(root, "extensions/index.ts"), "utf8");
 	const body = entry.replace(/^import .* from "\.\.\/src\/quota\.ts";\n/gm, "");
 	const split = body.indexOf('const STATUS_KEY = "codex-limit";');
 	assert.ok(split >= 0);

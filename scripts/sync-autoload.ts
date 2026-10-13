@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const target = resolve(process.argv[2] ?? `${homedir()}/.pi/agent/extensions/codex-limit.ts`);
 const source = await readFile(resolve(root, "src/quota.ts"), "utf8");
-const entry = await readFile(resolve(root, "extensions/codex-limit.ts"), "utf8");
+const entry = await readFile(resolve(root, "extensions/index.ts"), "utf8");
 const entryBody = entry.replace(/^import .* from "\.\.\/src\/quota\.ts";\n/gm, "");
 const splitAt = entryBody.indexOf('const STATUS_KEY = "codex-limit";');
 if (splitAt < 0 || entryBody.includes('from "../src/')) throw new Error("Unexpected extension layout; refusing to deploy");

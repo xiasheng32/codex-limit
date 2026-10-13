@@ -16,6 +16,12 @@ Reset-credit counts, records, and the reset button remain in the detail panel. P
 
 The server determines window counts and lengths. Accounts are not guaranteed to have both a 5-hour and a 7-day window. These values represent Codex subscription quota, not an OpenAI API account balance or the current session's token usage.
 
+## What's new in v0.2.3
+
+- Standardized the package entry point as `extensions/index.ts`, updating the pi extension manifest and packaging allowlist.
+- Updated the synchronization script, its tests, and both READMEs to use the new entry path; the standalone autoload output path is unchanged.
+- Entry-point contents and core quota logic are unchanged, with no changes to the HUD, queries, or reset-credit redemption behavior.
+
 ## What's new in v0.2.2
 
 - Simplified the footer to `🦖 Codex 额度：5h 96% (↻4h56m) 7d 87% (↻6d12h)`: removed the plan name and outer parentheses, wrapped each countdown separately, and separated windows with one space.
@@ -68,7 +74,7 @@ Restart pi or run `/reload` in an existing session.
 
 **Enable either the installed package or the standalone file at `~/.pi/agent/extensions/codex-limit.ts`, never both.** Loading both may register duplicate commands, statuses, and queries. If a standalone copy exists, disable the old source with `pi config`, or back it up and move it out of the autoload directory. Trial commands use `-ne` to isolate other extensions.
 
-`extensions/codex-limit.ts` depends on `src/quota.ts` and cannot be copied to the autoload directory on its own. For a standalone deployment, explicitly run from the project root:
+`extensions/index.ts` depends on `src/quota.ts` and cannot be copied to the autoload directory on its own. For a standalone deployment, explicitly run from the project root:
 
 ```bash
 npm run sync-autoload
@@ -192,7 +198,7 @@ Run from the project root:
 
 ```bash
 npm pack --offline --ignore-scripts --pack-destination ..
-# Creates codex-limit-0.2.2.tgz in the parent directory;
+# Creates codex-limit-0.2.3.tgz in the parent directory;
 # does not install the extension or publish to npm
 ```
 
@@ -202,7 +208,7 @@ Upload this project's contents with `package.json` at the repository root. Do no
 
 ```text
 codex-limit/
-├── extensions/codex-limit.ts       # pi entry point, HUD, command, and overlay
+├── extensions/index.ts             # pi entry point, HUD, command, and overlay
 ├── src/quota.ts                   # parsing, requests, and state machine tested offline
 ├── tests/codex-limit.test.ts
 ├── tests/sync-autoload.test.ts    # synchronization tests in temporary directories

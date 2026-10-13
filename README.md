@@ -14,6 +14,12 @@
 
 窗口数量和长度以服务端为准，不保证每个账号都有“5 小时 + 7 天”两种窗口。这里不是 OpenAI API 账户余额，也不是当前会话的 token 用量。
 
+## v0.2.3 更新
+
+- 将包入口统一为 `extensions/index.ts`，同步更新 pi 扩展清单与打包白名单。
+- 同步脚本、对应测试及双语文档改用新入口路径；独立自加载副本的输出路径保持不变。
+- 入口内容及额度核心逻辑不变，不改变 HUD、查询或重置卡使用行为。
+
 ## v0.2.2 更新
 
 - 精简页脚为 `🦖 Codex 额度：5h 96% (↻4h56m) 7d 87% (↻6d12h)`：移除套餐名及外层括号，每个倒计时单独加括号，窗口间使用单个空格。
@@ -65,7 +71,7 @@ pi install git:github.com/xiasheng32/codex-limit
 
 **包安装与 `~/.pi/agent/extensions/codex-limit.ts` 独立副本只能择一启用**，否则可能重复注册命令、状态栏与查询任务。已存在独立副本时，先通过 `pi config` 禁用旧来源，或备份后移出 autoload 目录；试用命令的 `-ne` 会隔离其他扩展。
 
-`extensions/codex-limit.ts` 依赖 `src/quota.ts`，不能单独复制到 autoload 目录。若选择单文件部署，在项目根目录显式运行：
+`extensions/index.ts` 依赖 `src/quota.ts`，不能单独复制到 autoload 目录。若选择单文件部署，在项目根目录显式运行：
 
 ```bash
 npm run sync-autoload
@@ -180,7 +186,7 @@ pi --offline -ne -e . --help
 
 ```bash
 npm pack --offline --ignore-scripts --pack-destination ..
-# 上一级目录生成 codex-limit-0.2.2.tgz，不安装插件、不发布 npm
+# 上一级目录生成 codex-limit-0.2.3.tgz，不安装插件、不发布 npm
 ```
 
 上传 GitHub 时使用本项目目录的内容，让 `package.json` 位于仓库根目录；不要把整个父目录、`.tgz`、凭据或本机配置上传。源码、测试、README、许可证和 `.gitignore` 均可保留。包清单使用精确文件白名单，不需要 `node_modules/`；压缩包解开后也可直接运行 `npm test` 和 `pi -ne -e .`。
@@ -189,7 +195,7 @@ npm pack --offline --ignore-scripts --pack-destination ..
 
 ```text
 codex-limit/
-├── extensions/codex-limit.ts       # pi 入口、HUD、命令与浮层
+├── extensions/index.ts             # pi 入口、HUD、命令与浮层
 ├── src/quota.ts                   # 可离线测试的解析、请求和状态机
 ├── tests/codex-limit.test.ts
 ├── tests/sync-autoload.test.ts    # 临时目录中的同步脚本测试
