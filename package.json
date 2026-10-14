@@ -1,7 +1,7 @@
 {
   "name": "codex-limit",
-  "version": "0.2.3",
-  "description": "Pi extension: 在页脚显示 Codex 订阅剩余额度与重置时间。",
+  "version": "0.3.0",
+  "description": "Pi extension: Codex 订阅额度、重置倒计时与会话内 Fast 模式。",
   "type": "module",
   "keywords": [
     "pi-package",
@@ -25,8 +25,12 @@
   "files": [
     "extensions/index.ts",
     "src/quota.ts",
+    "src/fast-mode.ts",
     "scripts/sync-autoload.ts",
     "tests/codex-limit.test.ts",
+    "tests/fast-mode.test.ts",
+    "tests/extension.test.ts",
+    "tests/transport.test.ts",
     "tests/sync-autoload.test.ts",
     "tsconfig.json",
     "README.md",
@@ -39,7 +43,7 @@
     ]
   },
   "scripts": {
-    "test": "node --test tests/codex-limit.test.ts tests/sync-autoload.test.ts",
+    "test": "node --test tests/*.test.ts",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && npm test",
     "sync-autoload": "node scripts/sync-autoload.ts"

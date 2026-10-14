@@ -4,25 +4,32 @@ import type { TUI } from "@earendil-works/pi-tui";
 import { matchesKey, rgbColor, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { detailLines, isLowQuota, isOffline, POLL_MS, PROVIDER, QuotaController, statusLine } from "../src/quota.ts";
 import type { QuotaState } from "../src/quota.ts";
+import { FAST_ENTRY, FastModeController, isCodexSubscription, restoreFastMode } from "../src/fast-mode.ts";
 
 const STATUS_KEY = "codex-limit";
 const LOW_QUOTA_DARK = rgbColor(240, 160, 160);
 const LOW_QUOTA_LIGHT = rgbColor(176, 82, 92);
+
+function usesCodexSubscription(ctx: ExtensionContext): boolean {
+	return !!ctx.model && isCodexSubscription(ctx.model, ctx.modelRegistry.isUsingOAuth(ctx.model));
+}
 
 export class QuotaPanel {
 	private readonly tui: TUI;
 	private readonly ctx: ExtensionContext;
 	private readonly controller: QuotaController;
 	private readonly done: (action?: "use") => void;
+	private readonly fast: FastModeController;
 	private finished = false;
 	private offset = 0;
 	private maxOffset = 0;
 
-	constructor(tui: TUI, ctx: ExtensionContext, controller: QuotaController, done: (action?: "use") => void) {
+	constructor(tui: TUI, ctx: ExtensionContext, controller: QuotaController, done: (action?: "use") => void, fast: FastModeController) {
 		this.tui = tui;
 		this.ctx = ctx;
 		this.controller = controller;
 		this.done = done;
+		this.fast = fast;
 	}
 
 	invalidate(): void {} // Lines and theme are recomputed on every render.
@@ -42,7 +49,13 @@ export class QuotaPanel {
 			bg: "selectedBg", bold: true,
 		});
 		if (width < 6 || this.tui.terminal.rows < 10) {
-			return [statusLine(state, now).text, buttonText, "Enter/Esc 关闭"]
+			const fastLines = this.fast.details(this.ctx.model, usesCodexSubscription(this.ctx));
+			const compact = [fastLines[1]!, fastLines[3]!, "", ...detailLines(state, now)]
+				.flatMap((line) => wrapTextWithAnsi(line, width));
+			const bodyHeight = Math.max(1, this.tui.terminal.rows - 2);
+			this.maxOffset = Math.max(0, compact.length - bodyHeight);
+			this.offset = Math.min(this.offset, this.maxOffset);
+			return [...compact.slice(this.offset, this.offset + bodyHeight), buttonText, "Enter/Esc 关闭 · ↑↓ 滚动"]
 				.slice(0, Math.max(0, this.tui.terminal.rows)).map((line) => truncateToWidth(line, width));
 		}
 		const inner = width - 2;
@@ -54,12 +67,12 @@ export class QuotaPanel {
 			return line;
 		};
 		const lowQuotaColor = theme.appearance === "light" ? LOW_QUOTA_LIGHT : LOW_QUOTA_DARK;
-		const content = detailLines(state, now, contentWidth < 42 ? 12 : 24, (line, window) => {
+		const content = [...this.fast.details(this.ctx.model, usesCodexSubscription(this.ctx)), "", ...detailLines(state, now, contentWidth < 42 ? 12 : 24, (line, window) => {
 			// Use the original window, not rounded display text or the other window's minimum.
 			const color = statusLine({ ...state, snapshot: { ...state.snapshot!, windows: [window] } }, now).color;
 			return line.split(/([█░]+)/).map((part) => isLowQuota(window.remainingPercent) && /[█░]/.test(part)
 				? theme.style(part, { fg: lowQuotaColor }) : theme.fg(color, part)).join("");
-		}).flatMap((line) => wrapTextWithAnsi(paint(line), contentWidth));
+		})].flatMap((line) => wrapTextWithAnsi(paint(line), contentWidth));
 		const bodyHeight = Math.max(1, Math.min(24, this.tui.terminal.rows - (button.enabled ? 8 : 9)));
 		this.maxOffset = Math.max(0, content.length - bodyHeight);
 		this.offset = Math.min(this.offset, this.maxOffset);
@@ -69,7 +82,7 @@ export class QuotaPanel {
 		};
 		return [
 			theme.fg("border", `╭${"─".repeat(inner)}╮`),
-			row(theme.fg("accent", "🦖 Codex 额度")),
+			row(theme.fg("accent", "🍧 Codex 额度")),
 			theme.fg("border", `├${"─".repeat(inner)}┤`),
 			...content.slice(this.offset, this.offset + bodyHeight).map((line) => row(line)),
 			theme.fg(button.enabled ? "accent" : "border", `├${"─".repeat(inner)}┤`),
@@ -103,11 +116,17 @@ export default function codexLimit(pi: ExtensionAPI): void {
 	// State is factory-local: reloads and different sessions cannot share requests.
 	let controller: QuotaController | null = null;
 	let timer: ReturnType<typeof setInterval> | undefined;
+	let activeContext: ExtensionContext | undefined;
+	const fast = new FastModeController();
 
 	function updateStatus(ctx: ExtensionContext, state: QuotaState): void {
 		if (ctx.mode !== "tui" || !ctx.hasUI) return;
+		if (!usesCodexSubscription(ctx)) {
+			ctx.ui.setStatus(STATUS_KEY, undefined);
+			return;
+		}
 		const status = statusLine(state, Date.now());
-		ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg(status.color, status.text));
+		ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg(status.color, status.text + fast.suffix()));
 	}
 
 	function getController(ctx: ExtensionContext): QuotaController {
@@ -115,7 +134,7 @@ export default function codexLimit(pi: ExtensionAPI): void {
 			const instance = new QuotaController({
 				resolveAuth: () => ctx.modelRegistry.getProviderAuth(PROVIDER),
 				offline: isOffline(process.env.PI_OFFLINE),
-				onChange: (state) => { if (controller === instance) updateStatus(ctx, state); },
+				onChange: (state) => { if (controller === instance && activeContext) updateStatus(activeContext, state); },
 			});
 			controller = instance;
 		}
@@ -130,32 +149,94 @@ export default function codexLimit(pi: ExtensionAPI): void {
 		if (ctx.mode === "tui" && ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);
 	}
 
-	pi.on("session_start", (_event, ctx) => {
-		stop(ctx);
-		if (ctx.mode !== "tui" || !ctx.hasUI) return;
+	function startQuota(ctx: ExtensionContext): void {
+		if (ctx.mode !== "tui" || !ctx.hasUI || !usesCodexSubscription(ctx)) return;
 		const instance = getController(ctx);
 		updateStatus(ctx, instance.getState());
 		void instance.refresh();
-		if (!isOffline(process.env.PI_OFFLINE)) {
+		if (timer === undefined && !isOffline(process.env.PI_OFFLINE)) {
 			timer = setInterval(() => {
+				if (!activeContext || !usesCodexSubscription(activeContext)) return;
 				void instance.refresh();
-				if (controller === instance) updateStatus(ctx, instance.getState());
+				if (controller === instance) updateStatus(activeContext, instance.getState());
 			}, POLL_MS);
 			timer.unref();
 		}
+	}
+
+	pi.on("session_start", (_event, ctx) => {
+		activeContext = ctx;
+		stop(ctx);
+		fast.resetSession(restoreFastMode(ctx.sessionManager.getEntries(), ctx.sessionManager.getSessionId()));
+		startQuota(ctx);
+	});
+
+	pi.on("model_select", (_event, ctx) => {
+		activeContext = ctx;
+		fast.resetResponse();
+		if (!usesCodexSubscription(ctx)) stop(ctx);
+		else startQuota(ctx);
+	});
+
+	pi.on("before_provider_request", (event, ctx) => {
+		activeContext = ctx;
+		const payload = fast.transform(event.payload, ctx.model, usesCodexSubscription(ctx));
+		if (payload !== undefined && controller) updateStatus(ctx, controller.getState());
+		return payload;
+	});
+
+	pi.on("provider_stream_event", (event, ctx) => {
+		if (event.provider !== PROVIDER || !usesCodexSubscription(ctx)) return;
+		const previousPhase = fast.phase;
+		fast.observe(event);
+		if (controller && previousPhase !== fast.phase) updateStatus(ctx, controller.getState());
 	});
 
 	pi.on("agent_settled", (_event, ctx) => {
-		if (ctx.mode !== "tui" || !controller) return;
+		activeContext = ctx;
+		fast.settle();
+		if (ctx.mode !== "tui" || !controller || !usesCodexSubscription(ctx)) return;
 		void controller.refresh();
 		updateStatus(ctx, controller.getState());
 	});
 
-	pi.on("session_shutdown", (_event, ctx) => stop(ctx));
+	pi.on("session_shutdown", (_event, ctx) => {
+		stop(ctx);
+		fast.setEnabled(false);
+		activeContext = undefined;
+	});
+
+	pi.registerCommand("fast", {
+		description: "仅当前会话：/fast on 开启 Codex Fast，/fast off 关闭",
+		handler: async (args, ctx) => {
+			activeContext = ctx;
+			const value = args.trim();
+			if (value !== "on" && value !== "off") {
+				ctx.ui.notify("用法：/fast on 或 /fast off（仅当前会话，新会话默认关闭）", "warning");
+				return;
+			}
+			const enabled = value === "on";
+			if (enabled && !usesCodexSubscription(ctx)) {
+				ctx.ui.notify("Fast 仅适用于 Codex 订阅 OAuth 模型，请先切换到 openai-codex。", "warning");
+				return;
+			}
+			try {
+				pi.appendEntry(FAST_ENTRY, { enabled, sessionId: ctx.sessionManager.getSessionId() });
+			} catch {
+				ctx.ui.notify("无法保存当前会话的 Fast 开关，原状态保持不变。", "warning");
+				return;
+			}
+			fast.setEnabled(enabled);
+			if (controller) updateStatus(ctx, controller.getState());
+			ctx.ui.notify(enabled ? "Fast 已开启，仅当前会话；订阅额度按标准的 2.5 倍消耗，实际档位以服务端返回为准。"
+				: "Fast 已关闭，仅当前会话。", "info");
+		},
+	});
 
 	pi.registerCommand("codex-limit", {
 		description: "查看 Codex 额度与重置卡；详情按 u 使用卡",
 		handler: async (args, ctx) => {
+			activeContext = ctx;
 			if (!ctx.hasUI) return;
 			const argument = args.trim();
 			if (argument) {
@@ -168,7 +249,7 @@ export default function codexLimit(pi: ExtensionAPI): void {
 			if (ctx.mode === "tui") {
 				while (controller === instance) {
 					const action = await ctx.ui.custom<"use" | undefined>(
-						(tui, _theme, _keybindings, done) => new QuotaPanel(tui, ctx, instance, done),
+						(tui, _theme, _keybindings, done) => new QuotaPanel(tui, ctx, instance, done, fast),
 						{ overlay: true, overlayOptions: { anchor: "center", width: 68, margin: 1 } },
 					);
 					if (controller !== instance || action !== "use") break;
@@ -180,7 +261,7 @@ export default function codexLimit(pi: ExtensionAPI): void {
 				}
 			} else {
 				const state = instance.getState();
-				ctx.ui.notify(detailLines(state, Date.now()).join("\n"), state.error ? "warning" : "info");
+				ctx.ui.notify([...fast.details(ctx.model, usesCodexSubscription(ctx)), "", ...detailLines(state, Date.now())].join("\n"), state.error ? "warning" : "info");
 			}
 		},
 	});

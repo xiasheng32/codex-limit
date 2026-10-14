@@ -10,9 +10,9 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 const script = join(root, "scripts/sync-autoload.ts");
 
 async function expectedBundle(): Promise<string> {
-	const source = await readFile(join(root, "src/quota.ts"), "utf8");
+	const source = (await Promise.all(["src/quota.ts", "src/fast-mode.ts"].map((path) => readFile(join(root, path), "utf8")))).join("\n");
 	const entry = await readFile(join(root, "extensions/index.ts"), "utf8");
-	const body = entry.replace(/^import .* from "\.\.\/src\/quota\.ts";\n/gm, "");
+	const body = entry.replace(/^import .* from "\.\.\/src\/(?:quota|fast-mode)\.ts";\n/gm, "");
 	const split = body.indexOf('const STATUS_KEY = "codex-limit";');
 	assert.ok(split >= 0);
 	return "// Self-contained pi autoload extension. Generated from CLIProjects/codex-limit by npm run sync-autoload.\n"

@@ -765,7 +765,7 @@ export function statusLine(state: QuotaState, now: number): { text: string; colo
 	const restricted = snapshot.allowed === false || snapshot.limitReached === true;
 	const expired = snapshot.windows.some((window) => window.resetAt !== null && window.resetAt <= now);
 	const minimum = Math.min(...snapshot.windows.map((window) => window.remainingPercent));
-	const text = `🦖 Codex${marker} 额度：${windows.join(" ") || "暂无主额度数据"}${restricted ? " | 受限" : ""}`;
+	const text = `🍧 Codex${marker} 额度：${windows.join(" ") || "暂无主额度数据"}${restricted ? " | 受限" : ""}`;
 	const color = state.stale || expired ? "warning" : state.phase === "loading" ? "accent"
 		: restricted || minimum === 0 ? "error" : minimum <= 10 ? "warning" : windows.length ? "success" : "dim";
 	return { text, color };
