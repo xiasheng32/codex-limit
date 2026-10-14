@@ -60,9 +60,7 @@ export class FastModeController {
 		if (this.request) this.overlapping = true;
 		this.request = { model: model!.id };
 		this.phase = this.overlapping ? "unknown" : "requested";
-		// The Codex subscription backend uses its catalog tier ID (`priority`).
-		// `fast` is accepted by the public API but rejected by this endpoint.
-		return { ...body, service_tier: "priority" };
+		return { ...body, service_tier: "fast" };
 	}
 
 	observe(event: { provider: string; api: string; model: string; data: unknown }): void {
