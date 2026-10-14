@@ -87,7 +87,7 @@ test("valid Codex provider payloads are decorated even without an input array", 
 
 test("Fast confirmation, standard fallback and missing or unknown tiers are distinguished", () => {
 	for (const [tier, phase, suffix] of [["fast", "fast", " · Fast"], ["priority", "fast", " · Fast"],
-		["default", "standard", " · Fast未生效"], [undefined, "unknown", " · Fast未确认"], ["auto", "unknown", " · Fast未确认"]]) {
+		["standard", "standard", " · Fast未生效"], ["default", "unknown", " · Fast未确认"], [undefined, "unknown", " · Fast未确认"], ["auto", "unknown", " · Fast未确认"]]) {
 		const fast = new FastModeController();
 		fast.setEnabled(true);
 		fast.transform(request(), model);
