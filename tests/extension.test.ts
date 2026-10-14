@@ -233,7 +233,7 @@ test("provider request and stream events update Fast confirmation, fallback and 
 	const h = harness();
 	await start(h);
 	await h.command("fast", "on");
-	for (const [tier, status] of [["fast", / · Fast$/], ["priority", / · Fast$/], ["default", /Fast未生效/], [undefined, /Fast未确认/]] as const) {
+	for (const [tier, status] of [["fast", / · Fast$/], ["priority", / · Fast$/], ["standard", /Fast未生效/], ["default", /Fast未确认/], [undefined, /Fast未确认/]] as const) {
 		const input = payload();
 		const before = structuredClone(input);
 		assert.deepEqual(await h.fire("before_provider_request", { payload: input }), { ...input, service_tier: "priority" });
