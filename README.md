@@ -21,6 +21,10 @@
 - `/codex-limit` 详情显示当前会话开关、模型和服务端档位；只有服务端确认后，页脚才显示 `· Fast`。切换其他模型后隐藏整条 Codex 状态栏，切回后恢复。
 - 页脚图标统一为 `🍧`，同步包入口、两个核心模块和独立自加载副本；没有新增运行时依赖。
 
+## v0.3.1 修复
+
+- 修正 Codex 订阅请求的 Fast 档位值为 `priority`。v0.3.0 使用的 `fast` 被订阅接口拒绝并返回 HTTP 400。
+
 ## v0.2.3 更新
 
 - 将包入口统一为 `extensions/index.ts`，同步更新 pi 扩展清单与打包白名单。
@@ -128,7 +132,7 @@ npm run sync-autoload -- /tmp/codex-limit.ts
 
 新会话默认关闭。选择保存为绑定当前 session ID 的自定义会话记录；恢复同一会话或 `/reload` 时恢复选择，不写全局配置，也不向模型上下文加入消息。新建或 fork 会话即使复制了历史记录也默认关闭。保存失败时保留原开关状态。切换模型保留当前会话选择，但清除旧的服务端确认，切回后等待新请求确认。
 
-Fast 仅适用于 **`openai-codex` provider、`openai-codex-responses` API 和 OAuth 订阅认证同时匹配的当前模型**。开启后，扩展通过公开 `before_provider_request` 钩子为匹配模型的请求设置 `service_tier: "fast"`，保留其他参数；关闭时不修改请求。切换至其他供应商、普通 `openai` API 或不符合条件的模型后，整条 Codex 状态栏隐藏，不显示 Fast 标记，不更改其请求；切回符合条件的模型后恢复。非 Codex 订阅模型下执行 `/fast on` 会提示先切换模型，原选择不变。
+Fast 仅适用于 **`openai-codex` provider、`openai-codex-responses` API 和 OAuth 订阅认证同时匹配的当前模型**。开启后，扩展通过公开 `before_provider_request` 钩子为匹配模型的请求设置 Codex 订阅接口要求的 `service_tier: "priority"`，保留其他参数；公开 Responses API 的 `fast` 值不能用于这个订阅接口。关闭时不修改请求。切换至其他供应商、普通 `openai` API 或不符合条件的模型后，整条 Codex 状态栏隐藏，不显示 Fast 标记，不更改其请求；切回符合条件的模型后恢复。非 Codex 订阅模型下执行 `/fast on` 会提示先切换模型，原选择不变。
 
 通过公开 `provider_stream_event` 钩子观察服务端完成事件，`fast` / `priority` 表示 Fast 已确认，`default` 表示服务端使用标准档位；缺失或未知档位、失败或不完整响应均显示未确认；前台与后台同模型请求重叠、无法确定响应归属时也显示未确认。发生这种重叠后，本次加载期间保持未确认，结束本轮、关闭再开启或切换模型都不会清除歧义；重新加载或恢复会话后等待新请求确认。无并发的正常请求不受影响。发送 Fast 参数不代表已经加速，扩展不自动重试或降级重发。开关变化不影响已发送的请求。
 
@@ -230,7 +234,7 @@ pi --offline -ne -e . --help
 
 ```bash
 npm pack --offline --ignore-scripts --pack-destination ..
-# 上一级目录生成 codex-limit-0.3.0.tgz，不安装插件、不发布 npm
+# 上一级目录生成 codex-limit-0.3.1.tgz，不安装插件、不发布 npm
 ```
 
 上传 GitHub 时使用本项目目录的内容，让 `package.json` 位于仓库根目录；不要把整个父目录、`.tgz`、凭据或本机配置上传。源码、测试、README、许可证和 `.gitignore` 均可保留。包清单使用精确文件白名单，不需要 `node_modules/`；压缩包解开后可直接运行上述核心测试和 `pi -ne -e .`；运行完整 `npm test` 或类型检查前，需按开发步骤安装开发依赖。

@@ -67,7 +67,7 @@ for (const transport of ["sse", "websocket"] as const) {
 		}).result();
 		assert.equal(result.stopReason, "stop", result.errorMessage);
 		assert.equal(requests, 1);
-		assert.equal(sent?.service_tier, "fast");
+		assert.equal(sent?.service_tier, "priority");
 		assert.equal(sent?.model, transportModel.id);
 		assert.equal((sent?.reasoning as { effort: string }).effort, "high");
 		assert.equal(fast.phase, "fast");

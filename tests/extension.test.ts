@@ -171,7 +171,7 @@ test("same-session tree navigation retains the session-wide preference", async (
 	await start(h);
 	await h.command("fast", "on");
 	await h.fire("session_tree", { oldLeafId: "branch-A", newLeafId: "branch-B", fromExtension: false });
-	assert.deepEqual(await h.fire("before_provider_request", { payload: payload() }), { ...payload(), service_tier: "fast" });
+	assert.deepEqual(await h.fire("before_provider_request", { payload: payload() }), { ...payload(), service_tier: "priority" });
 	assert.equal(h.entries.length, 1);
 });
 
@@ -226,7 +226,7 @@ test("provider request and stream events update Fast confirmation, fallback and 
 	for (const [tier, status] of [["fast", / · Fast$/], ["priority", / · Fast$/], ["default", /Fast未生效/], [undefined, /Fast未确认/]] as const) {
 		const input = payload();
 		const before = structuredClone(input);
-		assert.deepEqual(await h.fire("before_provider_request", { payload: input }), { ...input, service_tier: "fast" });
+		assert.deepEqual(await h.fire("before_provider_request", { payload: input }), { ...input, service_tier: "priority" });
 		assert.deepEqual(input, before);
 		assert.match(h.status()!, /Fast待确认/);
 		await h.fire("provider_stream_event", streamEvent(tier));
@@ -437,7 +437,7 @@ test("non-TUI and headless sessions never install a status bar", async () => {
 		await start(h);
 		await h.command("fast", "on");
 		assert.equal(h.statusHistory.length, 0);
-		assert.deepEqual(await h.fire("before_provider_request", { payload: payload() }), { ...payload(), service_tier: "fast" });
+		assert.deepEqual(await h.fire("before_provider_request", { payload: payload() }), { ...payload(), service_tier: "priority" });
 		assert.equal(h.authCalls, 0);
 		await h.fire("session_shutdown", { reason: "quit" });
 	}

@@ -54,7 +54,7 @@ test("Fast replaces only service_tier while preserving model, reasoning, tools, 
 	const payload = request();
 	const before = structuredClone(payload);
 	const transformed = fast.transform(payload, model, true);
-	assert.deepEqual(transformed, { ...before, service_tier: "fast" });
+	assert.deepEqual(transformed, { ...before, service_tier: "priority" });
 	assert.deepEqual(payload, before, "the original provider payload is never mutated");
 	assert.notEqual(transformed, payload);
 	assert.equal(fast.phase, "requested");
@@ -119,8 +119,8 @@ test("invalid stream data and unfinished requests never claim acceleration", () 
 test("overlapping cache-warming and foreground responses remain unconfirmed across turns until session reset", () => {
 	const fast = new FastModeController();
 	fast.setEnabled(true);
-	assert.deepEqual(fast.transform(request(), model, true), { ...request(), service_tier: "fast" });
-	assert.deepEqual(fast.transform(request(), model, true), { ...request(), service_tier: "fast" });
+	assert.deepEqual(fast.transform(request(), model, true), { ...request(), service_tier: "priority" });
+	assert.deepEqual(fast.transform(request(), model, true), { ...request(), service_tier: "priority" });
 	fast.observe(event("fast", { id: "cache-response" }));
 	assert.equal(fast.phase, "unknown");
 	fast.observe(event("priority", { id: "foreground-response" }));
