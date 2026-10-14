@@ -1,4 +1,5 @@
 # codex-limit
+
 [简体中文](README.md) | [English](README.en.md)
 
 > 一个 [pi](https://pi.dev) 扩展：在页脚 HUD 显示 **Codex 剩余额度与重置倒计时**，详情含套餐、重置时间与重置卡明细，支持**仅当前会话的 Fast 模式**，复用 pi 的 `openai-codex` OAuth 登录。

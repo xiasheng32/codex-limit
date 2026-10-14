@@ -1,4 +1,5 @@
 # codex-limit
+
 [简体中文](README.md) | [English](README.en.md)
 
 > A [pi](https://pi.dev) extension that shows **remaining Codex subscription quota and reset countdowns** in the footer HUD, with plan, reset times, and reset-credit details, plus **session-local Fast mode**. It reuses pi's `openai-codex` OAuth login.
