@@ -14,8 +14,14 @@ function fastRecord(value: unknown): Record<string, unknown> | undefined {
 		? value as Record<string, unknown> : undefined;
 }
 
+/** Fast requests follow the selected provider/API, independent of how Pi classified auth. */
+export function isCodexFastModel(model: FastModel | undefined): boolean {
+	return model?.provider === "openai-codex" && model.api === "openai-codex-responses";
+}
+
+/** Quota API access still requires host-confirmed OAuth credentials. */
 export function isCodexSubscription(model: FastModel | undefined, oauth: boolean): boolean {
-	return oauth && model?.provider === "openai-codex" && model.api === "openai-codex-responses";
+	return oauth && isCodexFastModel(model);
 }
 
 export function restoreFastMode(entries: readonly unknown[], sessionId: string): boolean {
@@ -51,10 +57,9 @@ export class FastModeController {
 		this.request = undefined;
 	}
 
-	transform(payload: unknown, model: FastModel | undefined, oauth: boolean): unknown {
+	transform(payload: unknown, model: FastModel | undefined): unknown {
 		const body = fastRecord(payload);
-		if (!this.enabled || !isCodexSubscription(model, oauth) || body?.model !== model?.id
-			|| !Array.isArray(body?.input)) return undefined;
+		if (!this.enabled || !isCodexFastModel(model) || body?.model !== model?.id) return undefined;
 		// The public payload hook has no request ID. If background warming overlaps a
 		// foreground stream, never attribute one stream's tier to the other request.
 		if (this.request) this.overlapping = true;
@@ -94,8 +99,8 @@ export class FastModeController {
 			: this.phase === "unknown" ? " · Fast未确认" : " · Fast待确认";
 	}
 
-	details(model: FastModel | undefined, oauth: boolean): string[] {
-		const applicable = isCodexSubscription(model, oauth);
+	details(model: FastModel | undefined): string[] {
+		const applicable = isCodexFastModel(model);
 		const modelId = model && /^[a-zA-Z0-9._:/-]{1,128}$/.test(model.id) ? model.id : "未知模型";
 		const tier = !applicable ? "当前模型未应用" : !this.enabled ? "Fast 已关闭"
 			: this.phase === "fast" ? "Fast（已确认）" : this.phase === "standard" ? "标准（Fast 未生效）"
