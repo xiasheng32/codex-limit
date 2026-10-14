@@ -1,6 +1,6 @@
 {
   "name": "codex-limit",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Pi extension: Codex 订阅额度、重置倒计时与会话内 Fast 模式。",
   "type": "module",
   "keywords": [
@@ -38,6 +38,8 @@
     "tsconfig.json",
     "README.md",
     "README.en.md",
+    "CHANGELOG.md",
+    "CHANGELOG.en.md",
     "LICENSE"
   ],
   "pi": {
