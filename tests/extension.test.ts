@@ -430,7 +430,7 @@ test("short terminals retain a readable Fast switch and server-tier summary", ()
 	const panel = new QuotaPanel(h.tui, h.ctx, controller, () => {}, fast);
 	assert.match(panel.render(40).join("\n"), /Fast 开关：关闭/);
 	fast.setEnabled(true);
-	fast.transform(payload(), codex, true);
+	fast.transform(payload(), codex);
 	fast.observe(streamEvent("fast"));
 	const output = panel.render(40).join("\n");
 	assert.match(output, /Fast 开关：开启/);
