@@ -4,7 +4,7 @@ import type { TUI } from "@earendil-works/pi-tui";
 import { matchesKey, rgbColor, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { detailLines, isLowQuota, isOffline, POLL_MS, PROVIDER, QuotaController, statusLine } from "../src/quota.ts";
 import type { QuotaState } from "../src/quota.ts";
-import { FAST_ENTRY, FastModeController, isCodexSubscription, restoreFastMode } from "../src/fast-mode.ts";
+import { FAST_ENTRY, FastModeController, isCodexFastModel, isCodexSubscription, restoreFastMode } from "../src/fast-mode.ts";
 
 const STATUS_KEY = "codex-limit";
 const LOW_QUOTA_DARK = rgbColor(240, 160, 160);
@@ -49,7 +49,7 @@ export class QuotaPanel {
 			bg: "selectedBg", bold: true,
 		});
 		if (width < 6 || this.tui.terminal.rows < 10) {
-			const fastLines = this.fast.details(this.ctx.model, usesCodexSubscription(this.ctx));
+			const fastLines = this.fast.details(this.ctx.model);
 			const compact = [fastLines[1]!, fastLines[3]!, "", ...detailLines(state, now)]
 				.flatMap((line) => wrapTextWithAnsi(line, width));
 			const bodyHeight = Math.max(1, this.tui.terminal.rows - 2);
@@ -67,7 +67,7 @@ export class QuotaPanel {
 			return line;
 		};
 		const lowQuotaColor = theme.appearance === "light" ? LOW_QUOTA_LIGHT : LOW_QUOTA_DARK;
-		const content = [...this.fast.details(this.ctx.model, usesCodexSubscription(this.ctx)), "", ...detailLines(state, now, contentWidth < 42 ? 12 : 24, (line, window) => {
+		const content = [...this.fast.details(this.ctx.model), "", ...detailLines(state, now, contentWidth < 42 ? 12 : 24, (line, window) => {
 			// Use the original window, not rounded display text or the other window's minimum.
 			const color = statusLine({ ...state, snapshot: { ...state.snapshot!, windows: [window] } }, now).color;
 			return line.split(/([█░]+)/).map((part) => isLowQuota(window.remainingPercent) && /[█░]/.test(part)
@@ -180,13 +180,13 @@ export default function codexLimit(pi: ExtensionAPI): void {
 
 	pi.on("before_provider_request", (event, ctx) => {
 		activeContext = ctx;
-		const payload = fast.transform(event.payload, ctx.model, usesCodexSubscription(ctx));
+		const payload = fast.transform(event.payload, ctx.model);
 		if (payload !== undefined && controller) updateStatus(ctx, controller.getState());
 		return payload;
 	});
 
 	pi.on("provider_stream_event", (event, ctx) => {
-		if (event.provider !== PROVIDER || !usesCodexSubscription(ctx)) return;
+		if (event.provider !== PROVIDER || !isCodexFastModel(ctx.model)) return;
 		const previousPhase = fast.phase;
 		fast.observe(event);
 		if (controller && previousPhase !== fast.phase) updateStatus(ctx, controller.getState());
@@ -216,8 +216,8 @@ export default function codexLimit(pi: ExtensionAPI): void {
 				return;
 			}
 			const enabled = value === "on";
-			if (enabled && !usesCodexSubscription(ctx)) {
-				ctx.ui.notify("Fast 仅适用于 Codex 订阅 OAuth 模型，请先切换到 openai-codex。", "warning");
+			if (enabled && !isCodexFastModel(ctx.model)) {
+				ctx.ui.notify("Fast 仅适用于 openai-codex Responses 模型，请先切换到 openai-codex。", "warning");
 				return;
 			}
 			try {
@@ -261,7 +261,7 @@ export default function codexLimit(pi: ExtensionAPI): void {
 				}
 			} else {
 				const state = instance.getState();
-				ctx.ui.notify([...fast.details(ctx.model, usesCodexSubscription(ctx)), "", ...detailLines(state, Date.now())].join("\n"), state.error ? "warning" : "info");
+				ctx.ui.notify([...fast.details(ctx.model), "", ...detailLines(state, Date.now())].join("\n"), state.error ? "warning" : "info");
 			}
 		},
 	});
