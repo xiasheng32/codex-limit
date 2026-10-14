@@ -83,7 +83,7 @@ export class FastModeController {
 		if (!["response.completed", "response.done", "response.incomplete", "response.failed"].includes(String(data?.type))) return;
 		this.phase = this.overlapping || data?.type === "response.failed" || data?.type === "response.incomplete" ? "unknown"
 			: response.service_tier === "fast" || response.service_tier === "priority" ? "fast"
-			: response.service_tier === "default" ? "standard" : "unknown";
+			: response.service_tier === "standard" ? "standard" : "unknown";
 		this.request = undefined;
 	}
 
