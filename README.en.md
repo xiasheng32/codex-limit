@@ -1,4 +1,4 @@
-# codex-limit
+# pi-codex
 
 [简体中文](README.md) | [English](README.en.md)
 
@@ -24,7 +24,7 @@ Requires Node.js >=22.19 and a pi host exposing `modelRegistry.getProviderAuth()
 After cloning, run from the project root containing `package.json` (or the `package/` directory after extracting a `.tgz`):
 
 ```bash
-cd codex-limit
+cd pi-codex
 
 pi --offline -ne -e .   # Offline trial only: no other extensions, config changes, or queries
 pi -ne -e .             # Online trial only: interactive startup queries the real account
@@ -34,17 +34,26 @@ pi install .            # Install persistently when ready; writes pi's package c
 Install from or update via GitHub:
 
 ```bash
-pi install git:github.com/xiasheng32/codex-limit
-pi update git:github.com/xiasheng32/codex-limit   # Update an installed package
+pi install git:github.com/xiasheng32/pi-codex
+pi update git:github.com/xiasheng32/pi-codex   # Update an installed package
 ```
 
 After installing or updating, restart pi or run `/reload` in an existing session.
 
 ### Avoid duplicate loading and generate a standalone file
 
-- **Enable either the installed package or the standalone copy at `~/.pi/agent/extensions/codex-limit.ts`, never both**, or commands, statuses, and queries are registered twice. If a standalone copy exists, disable the old source with `pi config`, or back it up and move it out of the autoload directory. Trial commands use `-ne` to isolate other extensions.
-- `extensions/index.ts` depends on `src/quota.ts`, `src/fast-mode.ts`, and `src/fast-catalog.ts` and cannot be copied to the autoload directory alone. For a standalone deployment run `npm run sync-autoload` from the project root (overwrites `~/.pi/agent/extensions/codex-limit.ts` by default, then `/reload`), or `npm run sync-autoload -- /tmp/codex-limit.ts` to generate one file without touching the active extension.
+- **Enable either the installed package or the standalone copy at `~/.pi/agent/extensions/pi-codex.ts`, never both**, or commands, statuses, and queries are registered twice. If a standalone copy exists, disable the old source with `pi config`, or back it up and move it out of the autoload directory. Trial commands use `-ne` to isolate other extensions.
+- `extensions/index.ts` depends on `src/quota.ts`, `src/fast-mode.ts`, and `src/fast-catalog.ts` and cannot be copied to the autoload directory alone. For a standalone deployment run `npm run sync-autoload` from the project root (overwrites `~/.pi/agent/extensions/pi-codex.ts` by default, then `/reload`), or `npm run sync-autoload -- /tmp/pi-codex.ts` to generate one file without touching the active extension.
 - The script updates only the selected output file; editing the source does not update an existing copy. Review the source and choose an installation method: offline mode never queries the real account, while online interactive startup does. Neither the repository nor the local archive contains credentials.
+
+### Migrating from codex-limit (v0.4.1 rename)
+
+Starting with v0.4.1 the extension is named `pi-codex` instead of `codex-limit`. This is a breaking change; existing users migrate as follows:
+
+1. The footer status key is now `pi-codex`: if you use a pi-cc-extensions custom footer, change `codex-limit` to `pi-codex` in its configuration (such as `footerLine2Keys`), otherwise the Codex status no longer shows in the footer.
+2. The `/codex-limit` command is now `/pi-codex`; the old command is not kept as an alias. `/fast` is unchanged.
+3. The standalone default output is now `~/.pi/agent/extensions/pi-codex.ts`: delete or move out the old `codex-limit.ts` copy and regenerate with `npm run sync-autoload`, otherwise the old and new copies load twice.
+4. The repository is now `github.com/xiasheng32/pi-codex` (old URLs redirect). Installed users run `pi update git:github.com/xiasheng32/pi-codex`, then restart pi or `/reload`.
 
 ## Usage
 
@@ -57,7 +66,7 @@ After installing or updating, restart pi or run `/reload` in an existing session
 
 | Command | Behavior |
 |---|---|
-| `/codex-limit` | Shows quota, reset-credit, and Fast details; refreshes stale data when not in backoff or cooldown |
+| `/pi-codex` | Shows quota, reset-credit, and Fast details; refreshes stale data when not in backoff or cooldown |
 | `/fast on` | Enables ordinary Fast after catalog validation; requires an active official Codex subscription OAuth model |
 | `/fast off` | Disables Fast for this session |
 
@@ -75,7 +84,7 @@ After installing or updating, restart pi or run `/reload` in an existing session
 
 ### Manually redeem a reset credit
 
-**The only entry point is the `[ ↻ 重置额度 · u ]` button at the bottom of the `/codex-limit` detail panel, activated with `u`.** There is no redemption subcommand or model-callable tool. The button has its own separated, bold, highlighted area that does not scroll with the details and shows available, unavailable, or processing status; when unavailable, pressing `u` only explains the reason.
+**The only entry point is the `[ ↻ 重置额度 · u ]` button at the bottom of the `/pi-codex` detail panel, activated with `u`.** There is no redemption subcommand or model-callable tool. The button has its own separated, bold, highlighted area that does not scroll with the details and shows available, unavailable, or processing status; when unavailable, pressing `u` only explains the reason.
 
 1. The extension queries quota and credits again before you select a credit. Only known full-reset credits with valid unique IDs, an available state, and no elapsed expiry may be used; missing expiration is shown as unknown and malformed expiration prevents redemption. Failed queries, invalid login, or cooldown prevent using stale cached data.
 2. Review the selected credit, quota, and the irreversible-action notice. Confirmation defaults to **Cancel**; only an explicit confirmation sends a redemption request. Esc, default Enter, or closing never redeems.
@@ -86,7 +95,7 @@ After installing or updating, restart pi or run `/reload` in an existing session
 
 ### Refresh policy and status
 
-- With a Codex subscription model active, interactive startup queries without blocking and attempts refresh every 60 seconds and on `agent_settled`, at least 30 seconds apart. Switching models stops automatic queries and hides the status; manual `/codex-limit` still shows details.
+- With a Codex subscription model active, interactive startup queries without blocking and attempts refresh every 60 seconds and on `agent_settled`, at least 30 seconds apart. Switching models stops automatic queries and hides the status; manual `/pi-codex` still shows details.
 - Only one refresh runs at a time, resolving authentication through pi again instead of permanently caching tokens. Selection, confirmation, and redemption run as a single operation, pausing other refreshes throughout.
 - Quota and credit requests each have a 10-second timeout, quota first. Failed quota queries retry with exponential backoff from 60 seconds up to 5 minutes; credit failures back off 60 seconds independently without hiding successful quota data. Neither query's 429 cooldown can be bypassed.
 - Failed credit-detail queries keep a clearly marked stale cache; an available count from `usage` can summarize missing details, and HTTP 404 or a changed format does not mean no credits. Network/data errors keep the last data marked `🍧 Codex[过期] 额度：`; invalid authentication, logout, or account changes clear old data.
@@ -119,7 +128,7 @@ Implementation references: [Codex query and redemption client](https://github.co
 
 ```bash
 # Core and synchronization tests only: no extra dependencies needed
-node --test tests/codex-limit.test.ts tests/fast-mode.test.ts tests/catalog.test.ts tests/sync-autoload.test.ts
+node --test tests/pi-codex.test.ts tests/fast-mode.test.ts tests/catalog.test.ts tests/sync-autoload.test.ts
 
 # Full tests and type checking: install the development dependencies first
 # without installing the extension, changing global pi, or running install scripts
@@ -134,18 +143,18 @@ pi --offline -ne -e . --help
 
 - Tests cover quota parsing, the full redemption flow (confirm/cancel, a single POST, the four official return codes, unresolved-operation locks), Fast routing and server tiers, catalog caching and backoff, session restore and model switching, throttling, single-flight, backoff, rate limits, and shutdown cleanup, plus the sync script in temporary directories. They use only synthetic JWTs, fake authentication, fake HTTP responses, fake selection UI, and controlled time, and **never redeem real credits**.
 - Entry integration tests drive real provider serialization over simulated transports through full-pipeline Pi SDK checks (`createAgentSession` + `ExtensionRunner`) to verify slash commands and request tiers. `tsconfig.json` enables strict checks; native Node execution only strips types and does not replace `npm run typecheck`.
-- The help command queries no real quota and alone cannot prove extension loading; to check real data, run `pi -ne -e .` and compare `/codex-limit` with the official usage page.
-- Local packaging: `npm pack --offline --ignore-scripts --pack-destination ..` creates `codex-limit-0.4.0.tgz` in the parent directory without installing the extension or publishing to npm. Upload this project's contents with `package.json` at the repository root; never upload the parent directory, `.tgz` files, credentials, or local configuration. The manifest uses an explicit file allowlist without `node_modules/`.
+- The help command queries no real quota and alone cannot prove extension loading; to check real data, run `pi -ne -e .` and compare `/pi-codex` with the official usage page.
+- Local packaging: `npm pack --offline --ignore-scripts --pack-destination ..` creates `pi-codex-0.4.1.tgz` in the parent directory without installing the extension or publishing to npm. Upload this project's contents with `package.json` at the repository root; never upload the parent directory, `.tgz` files, credentials, or local configuration. The manifest uses an explicit file allowlist without `node_modules/`.
 
 ## Project structure
 
 ```text
-codex-limit/
+pi-codex/
 ├── extensions/index.ts             # pi entry point, HUD, command, and overlay
 ├── src/quota.ts                    # parsing, requests, and state machine tested offline
 ├── src/fast-mode.ts                # session-local Fast and server-tier state
 ├── src/fast-catalog.ts             # official model catalog, capability cache, and backoff
-├── tests/codex-limit.test.ts       # quota parsing, requests, and state machine
+├── tests/pi-codex.test.ts          # quota parsing, requests, and state machine
 ├── tests/fast-mode.test.ts         # session-local Fast and server tiers
 ├── tests/catalog.test.ts           # model catalog, cache, and backoff
 ├── tests/extension.test.ts         # commands, sessions, and model-switch integration
@@ -166,7 +175,7 @@ pi loads only the manifest's entry point; `src/` is included in the distributed 
 
 ## Version history
 
-Current version **v0.4.0**. See [CHANGELOG.md](CHANGELOG.en.md) for the full history.
+Current version **v0.4.1**. See [CHANGELOG.md](CHANGELOG.en.md) for the full history.
 
 ## License
 

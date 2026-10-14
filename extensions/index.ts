@@ -9,7 +9,7 @@ import { FAST_ENTRY, FastModeController, isCodexSubscription, restoreFastMode } 
 import type { FastCapability } from "../src/fast-mode.ts";
 import { FastCatalog } from "../src/fast-catalog.ts";
 
-const STATUS_KEY = "codex-limit";
+const STATUS_KEY = "pi-codex";
 const LOW_QUOTA_DARK = rgbColor(240, 160, 160);
 const LOW_QUOTA_LIGHT = rgbColor(176, 82, 92);
 
@@ -115,7 +115,7 @@ export class QuotaPanel {
 	}
 }
 
-export default function codexLimit(pi: ExtensionAPI): void {
+export default function piCodex(pi: ExtensionAPI): void {
 	// State is factory-local: reloads and different sessions cannot share requests.
 	let controller: QuotaController | null = null;
 	let timer: ReturnType<typeof setInterval> | undefined;
@@ -291,14 +291,14 @@ export default function codexLimit(pi: ExtensionAPI): void {
 		},
 	});
 
-	pi.registerCommand("codex-limit", {
+	pi.registerCommand("pi-codex", {
 		description: "查看 Codex 额度与重置卡；详情按 u 使用卡",
 		handler: async (args, ctx) => {
 			activeContext = ctx;
 			if (!ctx.hasUI) return;
 			const argument = args.trim();
 			if (argument) {
-				ctx.ui.notify("用法：/codex-limit", "warning");
+				ctx.ui.notify("用法：/pi-codex", "warning");
 				return;
 			}
 			const instance = getController(ctx);

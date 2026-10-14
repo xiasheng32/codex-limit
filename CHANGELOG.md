@@ -2,6 +2,17 @@
 
 本项目所有显著变更都记录在此文件中。版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)，日期为发布日期。
 
+## [0.4.1] - 2026-10-15
+
+### 变更（破坏性）
+- 插件由 `codex-limit` 更名为 `pi-codex`：包名、页脚状态键、单文件部署默认输出 `~/.pi/agent/extensions/pi-codex.ts`、测试文件名同步更名；GitHub 仓库更名为 `xiasheng32/pi-codex`（旧地址自动重定向）。
+- 命令 `/codex-limit` 更名为 `/pi-codex`，旧命令不再保留；`/fast` 不变。
+
+### 迁移
+- 使用 pi-cc-extensions 自定义页脚的用户：把配置（如 `footerLine2Keys`）中的 `codex-limit` 改为 `pi-codex`，否则页脚不显示 Codex 状态。
+- 单文件部署用户：删除或移出旧的 `~/.pi/agent/extensions/codex-limit.ts`，用 `npm run sync-autoload` 生成 `pi-codex.ts`，避免新旧副本重复加载。
+- 已安装用户：运行 `pi update git:github.com/xiasheng32/pi-codex` 后重启 pi 或 `/reload`。
+
 ## [0.4.0] - 2026-10-15
 
 ### 新增

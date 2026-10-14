@@ -7,7 +7,7 @@ import { zstdDecompressSync } from "node:zlib";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import codexLimit from "../extensions/index.ts";
+import piCodex from "../extensions/index.ts";
 import { FastCatalog } from "../src/fast-catalog.ts";
 import { FAST_ENTRY } from "../src/fast-mode.ts";
 
@@ -18,7 +18,7 @@ const syntheticToken = "synthetic." + Buffer.from(JSON.stringify({
 
 for (const transport of ["sse", "websocket"] as const) {
 	test(`Pi SDK and ExtensionRunner drive ${transport} off → on → off with synthetic OAuth`, { timeout: 15_000 }, async (t) => {
-		const directory = await mkdtemp(join(tmpdir(), "codex-limit-host-"));
+		const directory = await mkdtemp(join(tmpdir(), "pi-codex-host-"));
 		t.after(() => rm(directory, { recursive: true, force: true }));
 		t.mock.method(FastCatalog.prototype, "read", async () => ({ kind: "supported" as const }));
 		const sent: Record<string, unknown>[] = [];
@@ -73,7 +73,7 @@ for (const transport of ["sse", "websocket"] as const) {
 		};
 		const loader = new DefaultResourceLoader({ cwd: directory, agentDir: directory, settingsManager: settings,
 			noExtensions: true, noSkills: true, noPromptTemplates: true, noContextFiles: true, disabledBuiltinExtensions: ["mcp"],
-			extensionFactories: [codexLimit, observer] });
+			extensionFactories: [piCodex, observer] });
 		await loader.reload();
 		const manager = SessionManager.inMemory(directory);
 		const { session, extensionsResult } = await createAgentSession({ cwd: directory, agentDir: directory, modelRuntime: runtime,

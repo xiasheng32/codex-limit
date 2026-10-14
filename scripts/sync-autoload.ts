@@ -5,14 +5,14 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const target = resolve(process.argv[2] ?? `${homedir()}/.pi/agent/extensions/codex-limit.ts`);
+const target = resolve(process.argv[2] ?? `${homedir()}/.pi/agent/extensions/pi-codex.ts`);
 const source = (await Promise.all(["src/quota.ts", "src/fast-mode.ts", "src/fast-catalog.ts"].map((path) => readFile(resolve(root, path), "utf8")))).join("\n")
 	.replace(/^import .* from "\.\/(?:quota|fast-mode)\.ts";\n/gm, "");
 const entry = await readFile(resolve(root, "extensions/index.ts"), "utf8");
 const entryBody = entry.replace(/^import .* from "\.\.\/src\/(?:quota|fast-mode|fast-catalog)\.ts";\n/gm, "");
-const splitAt = entryBody.indexOf('const STATUS_KEY = "codex-limit";');
+const splitAt = entryBody.indexOf('const STATUS_KEY = "pi-codex";');
 if (splitAt < 0 || entryBody.includes('from "../src/')) throw new Error("Unexpected extension layout; refusing to deploy");
-const bundle = "// Self-contained pi autoload extension. Generated from CLIProjects/codex-limit by npm run sync-autoload.\n"
+const bundle = "// Self-contained pi autoload extension. Generated from CLIProjects/pi-codex by npm run sync-autoload.\n"
 	+ entryBody.slice(0, splitAt) + source + "\n" + entryBody.slice(splitAt);
 await mkdir(dirname(target), { recursive: true });
 await writeFile(target, bundle);

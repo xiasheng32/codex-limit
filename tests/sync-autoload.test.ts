@@ -14,9 +14,9 @@ async function expectedBundle(): Promise<string> {
 		.replace(/^import .* from "\.\/(?:quota|fast-mode)\.ts";\n/gm, "");
 	const entry = await readFile(join(root, "extensions/index.ts"), "utf8");
 	const body = entry.replace(/^import .* from "\.\.\/src\/(?:quota|fast-mode|fast-catalog)\.ts";\n/gm, "");
-	const split = body.indexOf('const STATUS_KEY = "codex-limit";');
+	const split = body.indexOf('const STATUS_KEY = "pi-codex";');
 	assert.ok(split >= 0);
-	return "// Self-contained pi autoload extension. Generated from CLIProjects/codex-limit by npm run sync-autoload.\n"
+	return "// Self-contained pi autoload extension. Generated from CLIProjects/pi-codex by npm run sync-autoload.\n"
 		+ body.slice(0, split) + source + "\n" + body.slice(split);
 }
 
@@ -34,9 +34,9 @@ function runScript(home: string, args: string[]): string {
 }
 
 test("TS sync script generates an exact self-contained bundle at an explicit nested destination", async () => {
-	const home = await mkdtemp(join(tmpdir(), "codex-limit-sync-"));
+	const home = await mkdtemp(join(tmpdir(), "pi-codex-sync-"));
 	try {
-		const target = join(home, "nested", "codex-limit.ts");
+		const target = join(home, "nested", "pi-codex.ts");
 		assert.ok(runScript(home, [target]).includes(`Updated ${target}`));
 		assert.equal(await readFile(target, "utf8"), await expectedBundle());
 	} finally {
@@ -45,9 +45,9 @@ test("TS sync script generates an exact self-contained bundle at an explicit nes
 });
 
 test("TS sync script defaults to the sandbox autoload path without touching the real Pi home", async () => {
-	const home = await mkdtemp(join(tmpdir(), "codex-limit-sync-"));
+	const home = await mkdtemp(join(tmpdir(), "pi-codex-sync-"));
 	try {
-		const target = join(home, ".pi", "agent", "extensions", "codex-limit.ts");
+		const target = join(home, ".pi", "agent", "extensions", "pi-codex.ts");
 		assert.ok(runScript(home, []).includes(`Updated ${target}`));
 		assert.equal(await readFile(target, "utf8"), await expectedBundle());
 	} finally {

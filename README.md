@@ -1,4 +1,4 @@
-# codex-limit
+# pi-codex
 
 [简体中文](README.md) | [English](README.en.md)
 
@@ -24,7 +24,7 @@
 克隆后在包含 `package.json` 的项目根目录运行（解开 `.tgz` 后进入 `package/`）：
 
 ```bash
-cd codex-limit
+cd pi-codex
 
 pi --offline -ne -e .   # 仅本次离线试用：不加载其他扩展、不改配置、不查凭据或额度
 pi -ne -e .             # 仅本次在线试用：交互式启动会查询真实账号
@@ -34,17 +34,26 @@ pi install .            # 确认后安装为常驻扩展（写入 pi 包配置�
 通过 GitHub 安装或更新：
 
 ```bash
-pi install git:github.com/xiasheng32/codex-limit
-pi update git:github.com/xiasheng32/codex-limit   # 已安装时更新到仓库最新版
+pi install git:github.com/xiasheng32/pi-codex
+pi update git:github.com/xiasheng32/pi-codex   # 已安装时更新到仓库最新版
 ```
 
 安装或更新后重启 pi，或在已有会话中执行 `/reload`。
 
 ### 避免重复加载与单文件部署
 
-- **包安装与 `~/.pi/agent/extensions/codex-limit.ts` 独立副本只能择一启用**，否则会重复注册命令、状态栏与查询任务。已有独立副本时先用 `pi config` 禁用旧来源，或备份后移出 autoload 目录；试用命令的 `-ne` 会隔离其他扩展。
-- `extensions/index.ts` 依赖 `src/quota.ts`、`src/fast-mode.ts`、`src/fast-catalog.ts`，不能单独复制到 autoload 目录。单文件部署在项目根目录运行 `npm run sync-autoload`（默认覆盖 `~/.pi/agent/extensions/codex-limit.ts`，然后 `/reload`），或 `npm run sync-autoload -- /tmp/codex-limit.ts` 仅生成指定文件、不改启用中的插件。
+- **包安装与 `~/.pi/agent/extensions/pi-codex.ts` 独立副本只能择一启用**，否则会重复注册命令、状态栏与查询任务。已有独立副本时先用 `pi config` 禁用旧来源，或备份后移出 autoload 目录；试用命令的 `-ne` 会隔离其他扩展。
+- `extensions/index.ts` 依赖 `src/quota.ts`、`src/fast-mode.ts`、`src/fast-catalog.ts`，不能单独复制到 autoload 目录。单文件部署在项目根目录运行 `npm run sync-autoload`（默认覆盖 `~/.pi/agent/extensions/pi-codex.ts`，然后 `/reload`），或 `npm run sync-autoload -- /tmp/pi-codex.ts` 仅生成指定文件、不改启用中的插件。
 - 同步脚本只更新指定输出文件；修改源码不会自动更新已有副本。请审阅源码后自行选择安装方式：离线模式不查询真实账号，在线交互式启动会查询；仓库和本地压缩包不含任何凭据。
+
+### 从 codex-limit 迁移（v0.4.1 更名）
+
+v0.4.1 起插件由 `codex-limit` 更名为 `pi-codex`，属破坏性变更，老用户按以下步骤迁移：
+
+1. 页脚状态键 `codex-limit` 更名为 `pi-codex`：使用 pi-cc-extensions 自定义页脚的用户需把配置（如 `footerLine2Keys`）中的 `codex-limit` 改为 `pi-codex`，否则页脚不显示 Codex 状态。
+2. 命令 `/codex-limit` 更名为 `/pi-codex`，旧命令不再保留；`/fast` 不变。
+3. 单文件部署默认输出更名为 `~/.pi/agent/extensions/pi-codex.ts`：旧的 `codex-limit.ts` 独立副本必须删除或移出 autoload 目录，再用 `npm run sync-autoload` 重新生成，否则新旧副本重复加载。
+4. 仓库地址更名为 `github.com/xiasheng32/pi-codex`（旧地址自动重定向）；已安装用户运行 `pi update git:github.com/xiasheng32/pi-codex` 后重启 pi 或 `/reload`。
 
 ## 使用
 
@@ -57,7 +66,7 @@ pi update git:github.com/xiasheng32/codex-limit   # 已安装时更新到仓库�
 
 | 命令 | 功能 |
 |---|---|
-| `/codex-limit` | 查看额度、重置卡和 Fast 状态；缓存过期且不在退避/冷却期时刷新 |
+| `/pi-codex` | 查看额度、重置卡和 Fast 状态；缓存过期且不在退避/冷却期时刷新 |
 | `/fast on` | 核对官方目录支持后开启当前会话的普通 Fast，要求当前使用官方 Codex 订阅 OAuth 模型 |
 | `/fast off` | 关闭当前会话的 Fast |
 
@@ -75,7 +84,7 @@ pi update git:github.com/xiasheng32/codex-limit   # 已安装时更新到仓库�
 
 ### 手动使用重置卡
 
-**唯一入口是 `/codex-limit` 详情面板底部的 `[ ↻ 重置额度 · u ]` 按钮，按 `u` 激活**；没有消费子命令或模型可调用工具。按钮独立分隔、加粗高亮、不随明细滚动，显示可用/不可用/处理中状态；不可用时按 `u` 仅提示原因。
+**唯一入口是 `/pi-codex` 详情面板底部的 `[ ↻ 重置额度 · u ]` 按钮，按 `u` 激活**；没有消费子命令或模型可调用工具。按钮独立分隔、加粗高亮、不随明细滚动，显示可用/不可用/处理中状态；不可用时按 `u` 仅提示原因。
 
 1. 先重新查询额度和卡片明细，再选卡。只允许合法唯一 ID、状态可用且未到期的已知完全重置卡；有效期缺失显示未知、格式异常不能消费。查询失败、登录失效或冷却期间不能使用旧缓存。
 2. 阅读所选卡、额度及不可撤销提示；确认页默认选项为**取消**，只有主动确认才发送消费请求，Esc、默认 Enter 或关闭均不消费。
@@ -87,7 +96,7 @@ pi update git:github.com/xiasheng32/codex-limit   # 已安装时更新到仓库�
 
 ### 刷新与状态
 
-- 当前使用 Codex 订阅模型时，交互式会话启动非阻塞查询，每 60 秒和 `agent_settled` 时尝试刷新，自动请求至少间隔 30 秒；切换其他模型停止自动查询并隐藏状态栏，手动 `/codex-limit` 仍可查看详情。
+- 当前使用 Codex 订阅模型时，交互式会话启动非阻塞查询，每 60 秒和 `agent_settled` 时尝试刷新，自动请求至少间隔 30 秒；切换其他模型停止自动查询并隐藏状态栏，手动 `/pi-codex` 仍可查看详情。
 - 一次仅一个刷新请求，每次重新通过 pi 解析认证，不永久缓存 token。选卡、确认和消费全程单飞，期间暂停其他刷新。
 - 额度与重置卡请求各 10 秒超时，先额度后卡片。额度失败自动重试从 60 秒指数退避至最高 5 分钟，卡片失败独立退避 60 秒，不影响已成功的额度显示；两种查询的 429 冷却均不可绕过。
 - 卡片明细失败保留并标注过期缓存；`usage` 提供的可用张数可作明细缺失时的摘要，HTTP 404/格式变化不等于没有重置卡。网络/数据错误保留上次数据并以 `🍧 Codex[过期] 额度：` 标记；认证失效、退出登录或账号变化清空旧数据。
@@ -120,7 +129,7 @@ pi --offline -ne -e .
 
 ```bash
 # 核心与同步脚本测试，无需安装额外依赖
-node --test tests/codex-limit.test.ts tests/fast-mode.test.ts tests/catalog.test.ts tests/sync-autoload.test.ts
+node --test tests/pi-codex.test.ts tests/fast-mode.test.ts tests/catalog.test.ts tests/sync-autoload.test.ts
 
 # 完整测试和类型检查：先安装开发依赖（不安装插件、不改全局 pi、不执行安装脚本）
 npm ci --ignore-scripts --no-audit --no-fund
@@ -134,18 +143,18 @@ pi --offline -ne -e . --help
 
 - 测试覆盖额度解析、用卡全流程（确认/取消/单次 POST/四种官方返回码/未决锁）、Fast 路由与服务端档位、模型目录缓存与退避、会话恢复与模型切换、节流/单飞/退避/限流/关闭清理，以及临时目录中的同步脚本；只用合成 JWT、假认证、假 HTTP 响应、假选择 UI 和可控时间，**绝不消费真实卡片**。
 - 入口集成测试经 Pi SDK 全链路（`createAgentSession` + `ExtensionRunner`）驱动真实 provider 序列化验证 slash commands 与请求档位；`tsconfig.json` 开启严格检查，Node 原生运行只擦除类型，不能替代 `npm run typecheck`。
-- 帮助命令不查询真实额度，也不能单独证明扩展加载成功；如需核对真实数据，运行 `pi -ne -e .` 用 `/codex-limit` 对照官方用量页。
-- 本地打包：`npm pack --offline --ignore-scripts --pack-destination ..` 生成上层 `codex-limit-0.4.0.tgz`，不安装插件、不发布 npm。上传 GitHub 使用本项目目录内容（`package.json` 位于仓库根目录），不要上传父目录、`.tgz`、凭据或本机配置；包清单为精确文件白名单，不含 `node_modules/`。
+- 帮助命令不查询真实额度，也不能单独证明扩展加载成功；如需核对真实数据，运行 `pi -ne -e .` 用 `/pi-codex` 对照官方用量页。
+- 本地打包：`npm pack --offline --ignore-scripts --pack-destination ..` 生成上层 `pi-codex-0.4.1.tgz`，不安装插件、不发布 npm。上传 GitHub 使用本项目目录内容（`package.json` 位于仓库根目录），不要上传父目录、`.tgz`、凭据或本机配置；包清单为精确文件白名单，不含 `node_modules/`。
 
 ## 文件结构
 
 ```text
-codex-limit/
+pi-codex/
 ├── extensions/index.ts             # pi 入口、HUD、命令与浮层
 ├── src/quota.ts                    # 可离线测试的解析、请求和状态机
 ├── src/fast-mode.ts                # 会话内 Fast 与服务端档位状态
 ├── src/fast-catalog.ts             # 官方模型目录、能力缓存与退避
-├── tests/codex-limit.test.ts       # 额度解析、请求与状态机测试
+├── tests/pi-codex.test.ts          # 额度解析、请求与状态机测试
 ├── tests/fast-mode.test.ts         # 会话内 Fast 与服务端档位测试
 ├── tests/catalog.test.ts           # 模型目录、缓存与退避测试
 ├── tests/extension.test.ts         # 命令、会话与模型切换集成验证
@@ -166,7 +175,7 @@ Pi 通过清单只加载入口文件；`src/` 同时包含在发布文件中，�
 
 ## 版本更新
 
-当前版本 **v0.4.0**。完整更新记录见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本 **v0.4.1**。完整更新记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 许可
 

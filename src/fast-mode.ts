@@ -1,5 +1,5 @@
 /** Session-local Codex subscription speed preference; never stores request content. */
-export const FAST_ENTRY = "codex-limit-fast";
+export const FAST_ENTRY = "pi-codex-fast";
 
 export interface FastModel {
 	id: string;

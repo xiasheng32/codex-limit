@@ -1,6 +1,6 @@
 {
-  "name": "codex-limit",
-  "version": "0.4.0",
+  "name": "pi-codex",
+  "version": "0.4.1",
   "description": "Pi extension: Codex 订阅额度、重置倒计时与会话内 Fast 模式。",
   "type": "module",
   "keywords": [
@@ -13,11 +13,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/xiasheng32/codex-limit.git"
+    "url": "https://github.com/xiasheng32/pi-codex.git"
   },
-  "homepage": "https://github.com/xiasheng32/codex-limit#readme",
+  "homepage": "https://github.com/xiasheng32/pi-codex#readme",
   "bugs": {
-    "url": "https://github.com/xiasheng32/codex-limit/issues"
+    "url": "https://github.com/xiasheng32/pi-codex/issues"
   },
   "engines": {
     "node": ">=22.19.0"
@@ -28,7 +28,7 @@
     "src/fast-mode.ts",
     "src/fast-catalog.ts",
     "scripts/sync-autoload.ts",
-    "tests/codex-limit.test.ts",
+    "tests/pi-codex.test.ts",
     "tests/fast-mode.test.ts",
     "tests/catalog.test.ts",
     "tests/extension.test.ts",

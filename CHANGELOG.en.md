@@ -3,6 +3,17 @@
 All notable changes to this project are documented in this file.
 Versions follow [Semantic Versioning](https://semver.org/); dates are release dates.
 
+## [0.4.1] - 2026-10-15
+
+### Changed (breaking)
+- Renamed the extension from `codex-limit` to `pi-codex`: the package name, footer status key, standalone default output `~/.pi/agent/extensions/pi-codex.ts`, and test filenames follow, and the GitHub repository is now `xiasheng32/pi-codex` (old URLs redirect).
+- The `/codex-limit` command is now `/pi-codex`; the old command is not kept as an alias. `/fast` is unchanged.
+
+### Migration
+- If you use a pi-cc-extensions custom footer, change `codex-limit` to `pi-codex` in its configuration (such as `footerLine2Keys`), or the Codex status no longer shows in the footer.
+- For standalone deployments, delete or move out the old `~/.pi/agent/extensions/codex-limit.ts` and regenerate `pi-codex.ts` with `npm run sync-autoload` to avoid double loading.
+- Installed packages: run `pi update git:github.com/xiasheng32/pi-codex`, then restart pi or `/reload`.
+
 ## [0.4.0] - 2026-10-15
 
 ### Added

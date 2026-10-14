@@ -4,7 +4,7 @@ import type { TestContext } from "node:test";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import codexLimit, { QuotaPanel } from "../extensions/index.ts";
+import piCodex, { QuotaPanel } from "../extensions/index.ts";
 import { FAST_ENTRY, FastModeController } from "../src/fast-mode.ts";
 import { QuotaController } from "../src/quota.ts";
 import { FastCatalog } from "../src/fast-catalog.ts";
@@ -72,7 +72,7 @@ function harness(options: { entries?: Entry[]; sessionId?: string; model?: FastM
 			entries.push({ type: "custom", customType, data });
 		},
 	} as unknown as ExtensionAPI;
-	codexLimit(api);
+	piCodex(api);
 	const fire = async (name: string, event: Record<string, unknown> = {}) => {
 		const handler = events.get(name);
 		return handler ? await handler({ type: name, ...event }, ctx) : undefined;
@@ -86,7 +86,7 @@ function harness(options: { entries?: Entry[]; sessionId?: string; model?: FastM
 		get authCalls() { return authCalls; }, get selected() { return selected; }, get renders() { return renders; },
 		setOAuth: (value: boolean) => { oauth = value; }, setSessionId: (value: string) => { sessionId = value; },
 		failAppend: (value: boolean) => { appendFailure = value; },
-		status: () => statuses.get("codex-limit"),
+		status: () => statuses.get("pi-codex"),
 	};
 }
 
@@ -99,7 +99,7 @@ const streamEvent = (tier?: string) => ({ provider: codex.provider, api: codex.a
 
 test("only /fast on and off change Fast; commands run offline without looking up credentials", async () => {
 	const h = harness();
-	assert.deepEqual([...h.commands.keys()].sort(), ["codex-limit", "fast"]);
+	assert.deepEqual([...h.commands.keys()].sort(), ["fast", "pi-codex"]);
 	await start(h);
 	assert.ok(!h.status()?.includes("Fast"));
 	await h.command("fast", " on ");
@@ -124,8 +124,8 @@ test("bare /fast, status, toggle and invalid arguments cannot change the session
 		assert.equal(h.entries.length, 1);
 		assert.match(h.status()!, / · Fast$/);
 	}
-	await h.command("codex-limit", "fast on");
-	assert.match(h.notices.at(-1)!.message, /用法：\/codex-limit/);
+	await h.command("pi-codex", "fast on");
+	assert.match(h.notices.at(-1)!.message, /用法：\/pi-codex/);
 	assert.equal(h.panels.length, 0);
 	assert.equal(h.authCalls, 0);
 });
@@ -383,7 +383,7 @@ test("the supported Fast footer remains enabled while the panel reports a standa
 	await h.fire("before_provider_request", { payload: payload() });
 	await h.fire("provider_stream_event", streamEvent("default"));
 	assert.match(h.status()!, / · Fast$/);
-	await h.command("codex-limit");
+	await h.command("pi-codex");
 	const detail = h.panels.at(-1)!.render(68).join("\n");
 	assert.match(detail, /模型能力：支持 Fast/);
 	assert.match(detail, /请求档位：priority/);
@@ -507,7 +507,7 @@ test("the detail panel is read-only for Fast, with only u retaining the reset ac
 	const h = harness();
 	await start(h);
 	await h.command("fast", "on");
-	await h.command("codex-limit");
+	await h.command("pi-codex");
 	const output = h.panels[0]!.render(68).join("\n");
 	assert.match(output, /🍧 Codex 额度/);
 	assert.match(output, /Fast 开关：开启/);
