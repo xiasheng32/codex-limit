@@ -19,7 +19,7 @@ The server determines window counts and lengths. Accounts are not guaranteed to 
 ## What's new in v0.3.0
 
 - Added `/fast on` and `/fast off` as the only Fast controls. New sessions default to off; resuming or reloading the same session restores its choice. New and forked sessions do not inherit it.
-- Requests ordinary Fast only for `openai-codex` OAuth subscription models using `openai-codex-responses`. Other providers and regular OpenAI API requests are unchanged.
+- Requests ordinary Fast only for `openai-codex` models using `openai-codex-responses`, without blocking the switch on the host OAuth flag. Quota requests still require OAuth; other providers and regular OpenAI API requests are unchanged.
 - `/codex-limit` shows the session preference, model, and server tier. The footer shows `· Fast` only after server confirmation. Switching to another model hides the entire Codex status; switching back restores it.
 - Standardized the footer icon as `🍧` and synchronized the package entry, both core modules, and standalone autoload output, with no new runtime dependencies.
 
@@ -123,7 +123,7 @@ No `.env` or API key is required. A regular `OPENAI_API_KEY`, login to the `open
 | Command | Behavior |
 |---|---|
 | `/codex-limit` | Shows quota, reset-credit, and Fast details; refreshes stale data when not in backoff or cooldown |
-| `/fast on` | Enables ordinary Fast for this session; requires an active Codex subscription OAuth model |
+| `/fast on` | Enables ordinary Fast for this session; requires an active `openai-codex` Responses model |
 | `/fast off` | Disables Fast for this session |
 
 The centered detail panel contains a plan summary, remaining-quota progress bars, reset countdowns, reset-credit details, and an update timestamp. Each window independently uses its raw remaining ratio: **at ≤20%, including exactly 20% and 0%, its progress bar turns light red**, with colors adapted to light and dark themes. A low window does not change another window's bar. This only affects detail progress bars; footer color thresholds and stale/restricted indicators remain unchanged.
@@ -138,7 +138,7 @@ Use only `/fast on` and `/fast off` to switch. The `/codex-limit` panel displays
 
 New sessions default to off. The choice is stored as a custom session entry bound to the current session ID. Resuming the same session or running `/reload` restores it, without a global configuration file or a message in model context. New and forked sessions default to off even if their history contains copied entries. A failed save leaves the previous preference unchanged. Switching models retains the session preference but clears the old server confirmation; switching back awaits confirmation from a new request.
 
-Fast applies only when the current model has **provider `openai-codex`, API `openai-codex-responses`, and OAuth subscription authentication**. When enabled, the public `before_provider_request` hook adds the `service_tier: "priority"` required by the Codex subscription endpoint while preserving other parameters. The public Responses API's `fast` value does not work on this subscription endpoint. When disabled, requests are untouched. Switching to another provider, regular `openai` API, or an ineligible model hides the entire Codex footer status and leaves its requests unchanged. Switching back restores it. `/fast on` with an ineligible model asks you to switch first and preserves the existing choice.
+Fast injection applies only when the current model has **provider `openai-codex` and API `openai-codex-responses`**. The Fast toggle does not depend on the synchronous `isUsingOAuth()` flag, which can be unavailable even when Pi can send a valid Codex request. Quota queries still require OAuth, and only the server can confirm the actual tier. When enabled, the public `before_provider_request` hook adds the `service_tier: "priority"` required by the Codex subscription endpoint while preserving other parameters. The public Responses API's `fast` value does not work on this subscription endpoint. When disabled, requests are untouched. Switching to another provider, regular `openai` API, or an ineligible model hides the entire Codex footer status and leaves its requests unchanged. Switching back restores it. `/fast on` with an ineligible model asks you to switch first and preserves the existing choice.
 
 The public `provider_stream_event` hook observes server completion events. A `fast` or `priority` tier confirms Fast; `default` means the server used the standard tier. Missing or unknown tiers and failed or incomplete responses remain unconfirmed. Overlapping foreground and background requests to the same model also remain unconfirmed when their responses cannot be attributed reliably. After such an overlap, the current loaded instance stays unconfirmed; settling a turn, toggling off/on, or switching models does not clear the ambiguity. Reloading or resuming the session starts a new lifecycle that awaits confirmation from a new request. Normal requests without overlap are unaffected. Sending the Fast parameter alone does not confirm acceleration. The extension does not automatically retry or resend at another tier. Changing the switch does not affect requests already sent.
 
