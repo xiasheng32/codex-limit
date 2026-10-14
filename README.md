@@ -17,7 +17,7 @@
 ## v0.3.0 更新
 
 - 新增唯一 Fast 开关入口 `/fast on`、`/fast off`；新会话默认关闭，同一会话恢复和 `/reload` 保留选择，新建或 fork 会话不继承。
-- 仅为 `openai-codex` OAuth 订阅模型的 `openai-codex-responses` 请求设置普通 Fast；其他供应商和普通 OpenAI API 请求不变。
+- 仅为 `openai-codex` 的 `openai-codex-responses` 请求设置普通 Fast；不再因宿主 OAuth 标志未就绪而拒绝开关，额度查询仍要求 OAuth；其他供应商和普通 OpenAI API 请求不变。
 - `/codex-limit` 详情显示当前会话开关、模型和服务端档位；只有服务端确认后，页脚才显示 `· Fast`。切换其他模型后隐藏整条 Codex 状态栏，切回后恢复。
 - 页脚图标统一为 `🍧`，同步包入口、两个核心模块和独立自加载副本；没有新增运行时依赖。
 
@@ -119,7 +119,7 @@ npm run sync-autoload -- /tmp/codex-limit.ts
 | 命令 | 功能 |
 |---|---|
 | `/codex-limit` | 查看额度、重置卡和 Fast 状态；缓存过期且不在退避/冷却期时刷新 |
-| `/fast on` | 开启当前会话的普通 Fast，要求当前使用 Codex 订阅 OAuth 模型 |
+| `/fast on` | 开启当前会话的普通 Fast，要求当前使用 `openai-codex` Responses 模型 |
 | `/fast off` | 关闭当前会话的 Fast |
 
 详情采用居中紧凑分区：套餐摘要、剩余额度进度条、重置倒计时、重置卡明细和更新时间。每个窗口独立判断原始剩余比例：**剩余 ≤20%（包括 20% 和 0%）时，该窗口的额度条显示淡红色**，深浅主题使用适配的色调；不会因另一个窗口偏低而误染。仅影响详情进度条，页脚颜色阈值保持不变，过期/受限提示仍保留。日期采用**本机时区**。`u` 进入重置卡使用流程；`Enter`、`Esc` 或 `q` 关闭；窄/矮终端自动换行，必要时用 `↑` / `↓` 滚动，`Home` / `End` 跳至首尾。
@@ -132,7 +132,7 @@ npm run sync-autoload -- /tmp/codex-limit.ts
 
 新会话默认关闭。选择保存为绑定当前 session ID 的自定义会话记录；恢复同一会话或 `/reload` 时恢复选择，不写全局配置，也不向模型上下文加入消息。新建或 fork 会话即使复制了历史记录也默认关闭。保存失败时保留原开关状态。切换模型保留当前会话选择，但清除旧的服务端确认，切回后等待新请求确认。
 
-Fast 仅适用于 **`openai-codex` provider、`openai-codex-responses` API 和 OAuth 订阅认证同时匹配的当前模型**。开启后，扩展通过公开 `before_provider_request` 钩子为匹配模型的请求设置 Codex 订阅接口要求的 `service_tier: "priority"`，保留其他参数；公开 Responses API 的 `fast` 值不能用于这个订阅接口。关闭时不修改请求。切换至其他供应商、普通 `openai` API 或不符合条件的模型后，整条 Codex 状态栏隐藏，不显示 Fast 标记，不更改其请求；切回符合条件的模型后恢复。非 Codex 订阅模型下执行 `/fast on` 会提示先切换模型，原选择不变。
+Fast 请求注入仅适用于 **`openai-codex` provider 和 `openai-codex-responses` API 同时匹配的当前模型**。Fast 开关不再依赖 `isUsingOAuth()` 的同步结果，以免宿主尚未标记 OAuth 时错误拒绝；额度查询仍单独要求 OAuth，Fast 是否真正可用由服务端决定。开启后，扩展通过公开 `before_provider_request` 钩子为匹配模型的请求设置 Codex 订阅接口要求的 `service_tier: "priority"`，保留其他参数；公开 Responses API 的 `fast` 值不能用于这个订阅接口。关闭时不修改请求。切换至其他供应商、普通 `openai` API 或不符合条件的模型后，整条 Codex 状态栏隐藏，不显示 Fast 标记，不更改其请求；切回符合条件的模型后恢复。非 Codex Responses 模型下执行 `/fast on` 会提示先切换模型，原选择不变。
 
 通过公开 `provider_stream_event` 钩子观察服务端完成事件，`fast` / `priority` 表示 Fast 已确认，`default` 表示服务端使用标准档位；缺失或未知档位、失败或不完整响应均显示未确认；前台与后台同模型请求重叠、无法确定响应归属时也显示未确认。发生这种重叠后，本次加载期间保持未确认，结束本轮、关闭再开启或切换模型都不会清除歧义；重新加载或恢复会话后等待新请求确认。无并发的正常请求不受影响。发送 Fast 参数不代表已经加速，扩展不自动重试或降级重发。开关变化不影响已发送的请求。
 
