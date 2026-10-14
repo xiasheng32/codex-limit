@@ -17,9 +17,9 @@
 ## v0.3.0 更新
 
 - 新增唯一 Fast 开关入口 `/fast on`、`/fast off`；新会话默认关闭，同一会话恢复和 `/reload` 保留选择，新建或 fork 会话不继承。
-- 仅为 `openai-codex` OAuth 订阅模型的 `openai-codex-responses` 请求设置普通 Fast；其他供应商和普通 OpenAI API 请求不变。
-- `/codex-limit` 详情显示当前会话开关、模型和服务端档位；只有服务端确认后，页脚才显示 `· Fast`。切换其他模型后隐藏整条 Codex 状态栏，切回后恢复。
-- 页脚图标统一为 `🍧`，同步包入口、两个核心模块和独立自加载副本；没有新增运行时依赖。
+- 查询当前账号的官方模型能力目录；仅为支持 Fast 的官方 `chatgpt.com`、`openai-codex` OAuth 订阅模型设置普通 Fast。开启请求 `priority`，关闭请求 `default`；其他供应商和普通 OpenAI API 请求不变。
+- `/codex-limit` 详情分别显示当前会话开关、模型能力、请求档位和最近观察到的服务端档位；`· Fast` 表示能力支持且开关开启，不代表服务端确认或实际速度。切换其他模型后隐藏整条 Codex 状态栏，切回后恢复。
+- 页脚图标统一为 `🍧`，同步包入口、三个核心模块和独立自加载副本；没有新增运行时依赖。
 
 ## v0.2.3 更新
 
@@ -49,7 +49,7 @@
 
 ## 安装与试用
 
-需要 Node.js >=22.19 和提供 `modelRegistry.getProviderAuth()`、`before_provider_request`、`provider_stream_event` 的 pi；开发类型与集成测试使用 **1.0.4**；本机 **1.2.0** 已通过离线加载与命令注册验证。运行时由 pi 提供宿主包，无需单独安装运行时依赖；完整离线测试与类型检查需要安装本项目开发依赖。项目自维护代码统一为 TypeScript，由 Node 原生运行，不引入编译产物或额外 TS 运行器；开发类型检查需安装开发依赖。
+需要 Node.js >=22.19 和提供 `modelRegistry.getProviderAuth()`、`before_provider_request`、`provider_stream_event` 的 pi；开发类型与集成测试使用 **1.2.0**，并已通过 Pi SDK 完整链路测试（`createAgentSession` + `ExtensionRunner`）以及离线加载与命令注册验证。运行时由 pi 提供宿主包，无需单独安装运行时依赖；完整离线测试与类型检查需要安装本项目开发依赖。项目自维护代码统一为 TypeScript，由 Node 原生运行，不引入编译产物或额外 TS 运行器；开发类型检查需安装开发依赖。
 
 克隆项目后，在包含 `package.json` 的项目根目录运行（解开 `.tgz` 后则进入 `package/`）：
 
@@ -84,7 +84,7 @@ pi update git:github.com/xiasheng32/codex-limit
 
 **包安装与 `~/.pi/agent/extensions/codex-limit.ts` 独立副本只能择一启用**，否则可能重复注册命令、状态栏与查询任务。已存在独立副本时，先通过 `pi config` 禁用旧来源，或备份后移出 autoload 目录；试用命令的 `-ne` 会隔离其他扩展。
 
-`extensions/index.ts` 依赖 `src/quota.ts` 和 `src/fast-mode.ts`，不能单独复制到 autoload 目录。若选择单文件部署，在项目根目录显式运行：
+`extensions/index.ts` 依赖 `src/quota.ts`、`src/fast-mode.ts` 和 `src/fast-catalog.ts`，不能单独复制到 autoload 目录。若选择单文件部署，在项目根目录显式运行：
 
 ```bash
 npm run sync-autoload
@@ -115,7 +115,7 @@ npm run sync-autoload -- /tmp/codex-limit.ts
 | 命令 | 功能 |
 |---|---|
 | `/codex-limit` | 查看额度、重置卡和 Fast 状态；缓存过期且不在退避/冷却期时刷新 |
-| `/fast on` | 开启当前会话的普通 Fast，要求当前使用 Codex 订阅 OAuth 模型 |
+| `/fast on` | 核对官方目录支持后开启当前会话的普通 Fast，要求当前使用官方 Codex 订阅 OAuth 模型 |
 | `/fast off` | 关闭当前会话的 Fast |
 
 详情采用居中紧凑分区：套餐摘要、剩余额度进度条、重置倒计时、重置卡明细和更新时间。每个窗口独立判断原始剩余比例：**剩余 ≤20%（包括 20% 和 0%）时，该窗口的额度条显示淡红色**，深浅主题使用适配的色调；不会因另一个窗口偏低而误染。仅影响详情进度条，页脚颜色阈值保持不变，过期/受限提示仍保留。日期采用**本机时区**。`u` 进入重置卡使用流程；`Enter`、`Esc` 或 `q` 关闭；窄/矮终端自动换行，必要时用 `↑` / `↓` 滚动，`Home` / `End` 跳至首尾。
@@ -124,15 +124,15 @@ npm run sync-autoload -- /tmp/codex-limit.ts
 
 ### 会话内 Fast 模式
 
-只通过 `/fast on` 和 `/fast off` 切换。`/codex-limit` 面板仅查看开关、当前模型、服务端实际档位及消耗说明，没有 Fast 按钮或 `f` 快捷键，也没有 `/fast status`、`/codex-limit fast` 子命令或启动参数。裸 `/fast` 和无效参数仅显示用法，不改变开关、不查询额度。
+唯一开关入口是 `/fast on` 和 `/fast off`。`/codex-limit` 面板显示当前会话开关、当前模型、Fast 能力、请求档位、最近观察到的服务端档位及消耗说明。裸 `/fast` 和无效参数显示用法，不改变选择；面板只查看 Fast，不提供切换按钮。
 
-新会话默认关闭。选择保存为绑定当前 session ID 的自定义会话记录；恢复同一会话或 `/reload` 时恢复选择，不写全局配置，也不向模型上下文加入消息。新建或 fork 会话即使复制了历史记录也默认关闭。保存失败时保留原开关状态。切换模型保留当前会话选择，但清除旧的服务端确认，切回后等待新请求确认。
+新会话默认关闭。选择保存为绑定当前 session ID 的自定义会话记录；恢复同一会话或 `/reload` 时恢复选择，不写全局配置，也不向模型上下文加入消息。新建或 fork 会话即使复制了历史记录也默认关闭。保存失败时保留原开关状态。切换模型保留当前会话选择，同时清除旧的响应观察状态。
 
-Fast 仅适用于 **`openai-codex` provider、`openai-codex-responses` API 和 OAuth 订阅认证同时匹配的当前模型**。开启后，扩展通过公开 `before_provider_request` 钩子为匹配模型的请求设置 `service_tier: "fast"`，保留其他参数；关闭时不修改请求。切换至其他供应商、普通 `openai` API 或不符合条件的模型后，整条 Codex 状态栏隐藏，不显示 Fast 标记，不更改其请求；切回符合条件的模型后恢复。非 Codex 订阅模型下执行 `/fast on` 会提示先切换模型，原选择不变。
+Fast 仅适用于 **官方 `chatgpt.com` 端点、`openai-codex` provider、`openai-codex-responses` API 和 OAuth 订阅认证同时匹配的当前模型**。扩展向当前账号查询 `GET /backend-api/codex/models?client_version=<Pi 版本>`，以模型目录中的能力判断为“支持”“不支持”或“未知”，不按模型名称推测。能力结果在内存缓存 5 分钟；查询失败退避 30 秒，账号切换时隔离旧结果；离线模式不查询。目录缺失或查询失败显示能力未知。
 
-通过公开 `provider_stream_event` 钩子观察服务端完成事件，`fast` / `priority` 表示 Fast 已确认，`default` 表示服务端使用标准档位；缺失或未知档位、失败或不完整响应均显示未确认；前台与后台同模型请求重叠、无法确定响应归属时也显示未确认。发生这种重叠后，本次加载期间保持未确认，结束本轮、关闭再开启或切换模型都不会清除歧义；重新加载或恢复会话后等待新请求确认。无并发的正常请求不受影响。发送 Fast 参数不代表已经加速，扩展不自动重试或降级重发。开关变化不影响已发送的请求。
+`/fast on` 先验证当前模型能力，只有目录明确支持后才保存当前会话开关。能力未知、不支持或模型不适用时，提示原因并保留原选择。对匹配的官方订阅模型请求，公开 `before_provider_request` 钩子在开关开启且能力支持时设置 `service_tier: "priority"`；关闭时显式设置 `service_tier: "default"`。其余请求参数保留。保留的开启偏好遇到未知或不支持能力时不会请求 Fast。切换其他供应商、普通 `openai` API 或非官方端点模型后，整条 Codex 状态栏隐藏，其请求不变；切回后恢复。开关变化不影响已发送的请求。
 
-服务端确认后的页脚示例：
+能力支持且会话开关开启时的页脚示例：
 
 ```text
 🍧 Codex 额度：5h 78% (↻2h) 7d 64% (↻3d) · Fast
@@ -141,13 +141,14 @@ Fast 仅适用于 **`openai-codex` provider、`openai-codex-responses` API 和 O
 | 当前状态 | 页脚后缀 |
 |---|---|
 | 关闭 | 无后缀 |
-| 开启，等待请求确认 | `· Fast待确认` |
-| 服务端确认 Fast | `· Fast` |
-| 服务端返回标准档位 | `· Fast未生效` |
-| 档位缺失、未知、失败/不完整响应或并发归属不明 | `· Fast未确认` |
-| 其他供应商或非订阅模型 | 整条 Codex 状态栏隐藏 |
+| 开启且模型能力支持 | `· Fast` |
+| 保留开启偏好，但能力未知 | `· Fast能力未知` |
+| 保留开启偏好，但模型不支持 | `· Fast不可用` |
+| 其他供应商或非官方订阅模型 | 整条 Codex 状态栏隐藏 |
 
-普通 Fast 的订阅额度消耗按标准模式的 **2.5 倍**；可用性取决于模型、账号和服务端。本版不启用 Ultrafast，也未进行真实模型测速，不承诺固定速度提升。[OpenAI 速度说明](https://learn.chatgpt.com/docs/agent-configuration/speed)；宿主接口参考 [pi 公开扩展事件与会话接口](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/extensions/types.ts)。
+页脚 `· Fast` 表示当前能力支持且会话选择开启，**不表示服务端实际档位已确认或速度已提升**。面板单独展示最近观察到的服务端档位：`priority` / `fast` 显示 Fast，`default` 显示“服务端返回标准档位”，缺失档位显示“未返回”；失败、不完整响应或并发响应归属不明显示“无法确认”。同模型前后台请求重叠后，本次加载期间不归属后续响应，重新加载或恢复会话后等待新请求；这只影响观察，不改变能力判断与页脚开关状态。扩展不自动重试或降级重发模型请求。
+
+普通 Fast 的订阅额度消耗按标准模式的 **2.5 倍**。本版不启用 Ultrafast，也未进行真实模型测速，不承诺固定速度提升。[OpenAI 速度说明](https://learn.chatgpt.com/docs/agent-configuration/speed)；设计参考 [上游 pi-usage Fast 实现](https://github.com/narumiruna/pi-extensions/blob/main/packages/pi-usage/src/codex-fast.ts)，公开接口参考 [pi 扩展事件与会话接口](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/extensions/types.ts)。
 
 ### 手动使用重置卡
 
@@ -188,12 +189,13 @@ pi --offline -ne -e .
 
 ## 安全与接口限制
 
-- 查询仅向固定的 `https://chatgpt.com/backend-api/wham/usage` 与 `https://chatgpt.com/backend-api/wham/rate-limit-reset-credits` 发送 GET；只有详情面板选卡并明确确认后，才向固定的 `https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume` 发送一次 POST，JSON 包含所选 `credit_id` 和每次操作生成的 UUID `redeem_request_id`。携带 OAuth Bearer 和账号路由头，拒绝重定向，不允许自定义端点。
+- 额度与重置卡查询仅向固定的 `https://chatgpt.com/backend-api/wham/usage` 与 `https://chatgpt.com/backend-api/wham/rate-limit-reset-credits` 发送 GET；只有详情面板选卡并明确确认后，才向固定的 `https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume` 发送一次 POST，JSON 包含所选 `credit_id` 和每次操作生成的 UUID `redeem_request_id`。携带 OAuth Bearer 和账号路由头，拒绝重定向，不允许自定义端点。
+- Fast 能力查询仅向官方 `https://chatgpt.com/backend-api/codex/models` 发送带 Pi 版本参数的 GET，使用当前订阅账号认证，拒绝重定向，10 秒超时，响应上限 8 MiB；不向自定义端点查询或发送 Fast 参数。目录仅在内存保留一个账号的能力数据，账号或令牌变化时清除缓存，不记录凭据或原始响应。
 - 公开状态仅保留数量、已知状态、类型和时间；卡片 ID、账号关联与防重锁仅保存在控制器私有内存，消费请求 ID 仅用于此次请求，不写入 UI、会话、日志或磁盘。丢弃用户信息、标题、描述等原始字段。
 - 只在内存解析 host-issued JWT payload 获取路由账号 ID；**这不是 JWT 签名验证**。
 - 不记录 access/refresh token、账号 ID、认证异常原文、完整响应，不把这些内容写入会话或普通日志。
 - 扩展依然与 pi 拥有相同的系统权限，请仅加载可信代码。
-- 这个接口是 Codex 内部用量接口，**不是稳定的 OpenAI Platform 公共 API**，可能随时变化或拒绝请求。HTTP 401/403 时请在 pi 重新登录；网络或代理异常时检查运行环境。
+- 这些接口是 Codex 内部用量与模型目录接口，**不是稳定的 OpenAI Platform 公共 API**，可能随时变化或拒绝请求。HTTP 401/403 时请在 pi 重新登录；网络或代理异常时检查运行环境。
 - 目前显示 `rate_limit` 的主额度窗口；不将模型专属额度、代码审查额度、credits 等其他字段混入主额度。额度足够也不保证模型服务没有容量限制。
 - 重置时间仅转述服务端值，不推断固定的每周日历周期或额度恢复承诺。
 
@@ -205,7 +207,7 @@ pi --offline -ne -e .
 
 ```bash
 # 仅核心与同步脚本测试，无需安装额外依赖
-node --test tests/codex-limit.test.ts tests/fast-mode.test.ts tests/sync-autoload.test.ts
+node --test tests/codex-limit.test.ts tests/fast-mode.test.ts tests/catalog.test.ts tests/sync-autoload.test.ts
 
 # 完整测试和类型检查：先安装本项目开发依赖
 # 不安装插件、不修改全局 pi；不执行依赖安装脚本
@@ -218,9 +220,9 @@ npm run check      # 类型检查 + 全部离线测试
 pi --offline -ne -e . --help
 ```
 
-完整测试中的入口集成测试使用 pi 宿主开发依赖；类型检查使用 TypeScript、Node 类型及仅供开发的 pi 1.0.4 宿主包；运行时仍由 pi 提供宿主包，不将其加入运行时依赖或捆绑进扩展。`tsconfig.json` 开启严格检查、未使用声明检查及可擦除语法限制；Node 原生运行只擦除类型，不能替代 `npm run typecheck`。
+完整测试中的入口集成测试使用 pi 宿主开发依赖，并通过 Pi SDK 完整链路测试（`createAgentSession` + `ExtensionRunner`）驱动真实 provider 序列化与模拟传输验证 slash commands 与请求档位；类型检查使用 TypeScript、Node 类型及仅供开发的 pi 1.2.0 宿主包；运行时仍由 pi 提供宿主包，不将其加入运行时依赖或捆绑进扩展。`tsconfig.json` 开启严格检查、未使用声明检查及可擦除语法限制；Node 原生运行只擦除类型，不能替代 `npm run typecheck`。
 
-测试保留全部额度/用卡用例，并增加 Fast 请求变换、服务端档位、命令、会话恢复与模型切换测试；覆盖 TS 同步脚本的指定输出与默认输出：这两类同步测试均隔离在临时目录及临时 HOME，不写入真实 Pi 自加载目录。测试仅使用合成 JWT、假认证、假 HTTP 响应、假选择 UI 和可控时间；覆盖比例/窗口/重置解析、确认与取消、指定卡片单次 POST、四种官方返回码、未决锁、账号切换、超时、错误脱敏、节流、单飞、退避、限流和关闭清理；绝不消费真实卡片。帮助命令不查询真实额度，但不能单独证明扩展加载成功，也不验证真实账号访问；离线交互式试用可检查 HUD 与命令是否注册。
+测试保留全部额度/用卡用例，并增加模型能力目录、缓存与退避、Fast 请求变换、服务端档位、命令、会话恢复与模型切换测试；覆盖 TS 同步脚本的指定输出与默认输出：这两类同步测试均隔离在临时目录及临时 HOME，不写入真实 Pi 自加载目录。测试仅使用合成 JWT、假认证、假 HTTP 响应、假选择 UI 和可控时间；覆盖比例/窗口/重置解析、确认与取消、指定卡片单次 POST、四种官方返回码、未决锁、账号切换、超时、错误脱敏、节流、单飞、退避、限流和关闭清理；绝不消费真实卡片。帮助命令不查询真实额度，但不能单独证明扩展加载成功，也不验证真实账号访问；离线交互式试用可检查 HUD 与命令是否注册。
 
 如需核对真实数据，可自行运行 `pi -ne -e .`，用 `/codex-limit` 对照 Codex 官方用量页检查剩余比例及重置时刻；这不是离线测试的一部分。
 
@@ -242,10 +244,13 @@ codex-limit/
 ├── extensions/index.ts             # pi 入口、HUD、命令与浮层
 ├── src/quota.ts                   # 可离线测试的解析、请求和状态机
 ├── src/fast-mode.ts               # 会话内 Fast 与服务端档位状态
+├── src/fast-catalog.ts            # 官方模型目录、能力缓存与退避
 ├── tests/codex-limit.test.ts
 ├── tests/fast-mode.test.ts
+├── tests/catalog.test.ts
 ├── tests/extension.test.ts         # 命令、会话与模型切换集成验证
 ├── tests/transport.test.ts         # 真实宿主 HTTP/WebSocket 序列化的离线验证
+├── tests/host.test.ts              # Pi SDK 完整链路（createAgentSession + ExtensionRunner）的模拟传输验证
 ├── tests/sync-autoload.test.ts    # 临时目录中的同步脚本测试
 ├── scripts/sync-autoload.ts       # 显式同步 pi 自加载副本
 ├── tsconfig.json                 # 只做类型检查，不生成 JS

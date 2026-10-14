@@ -26,11 +26,14 @@
     "extensions/index.ts",
     "src/quota.ts",
     "src/fast-mode.ts",
+    "src/fast-catalog.ts",
     "scripts/sync-autoload.ts",
     "tests/codex-limit.test.ts",
     "tests/fast-mode.test.ts",
+    "tests/catalog.test.ts",
     "tests/extension.test.ts",
     "tests/transport.test.ts",
+    "tests/host.test.ts",
     "tests/sync-autoload.test.ts",
     "tsconfig.json",
     "README.md",
@@ -49,8 +52,8 @@
     "sync-autoload": "node scripts/sync-autoload.ts"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "1.0.4",
-    "@earendil-works/pi-tui": "1.0.4",
+    "@earendil-works/pi-coding-agent": "1.2.0",
+    "@earendil-works/pi-tui": "1.2.0",
     "@types/node": "22.19.0",
     "typescript": "5.9.3"
   },

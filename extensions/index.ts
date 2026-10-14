@@ -1,10 +1,13 @@
 /** Codex subscription quota HUD. Authentication and OAuth refresh belong to pi. */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { VERSION } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import { matchesKey, rgbColor, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { detailLines, isLowQuota, isOffline, POLL_MS, PROVIDER, QuotaController, statusLine } from "../src/quota.ts";
 import type { QuotaState } from "../src/quota.ts";
 import { FAST_ENTRY, FastModeController, isCodexSubscription, restoreFastMode } from "../src/fast-mode.ts";
+import type { FastCapability } from "../src/fast-mode.ts";
+import { FastCatalog } from "../src/fast-catalog.ts";
 
 const STATUS_KEY = "codex-limit";
 const LOW_QUOTA_DARK = rgbColor(240, 160, 160);
@@ -50,7 +53,7 @@ export class QuotaPanel {
 		});
 		if (width < 6 || this.tui.terminal.rows < 10) {
 			const fastLines = this.fast.details(this.ctx.model, usesCodexSubscription(this.ctx));
-			const compact = [fastLines[1]!, fastLines[3]!, "", ...detailLines(state, now)]
+			const compact = [...fastLines.slice(1, 6), "", ...detailLines(state, now)]
 				.flatMap((line) => wrapTextWithAnsi(line, width));
 			const bodyHeight = Math.max(1, this.tui.terminal.rows - 2);
 			this.maxOffset = Math.max(0, compact.length - bodyHeight);
@@ -118,6 +121,35 @@ export default function codexLimit(pi: ExtensionAPI): void {
 	let timer: ReturnType<typeof setInterval> | undefined;
 	let activeContext: ExtensionContext | undefined;
 	const fast = new FastModeController();
+	let fastGeneration = 0;
+	let preferenceRevision = 0;
+	let capabilityRevision = 0;
+	let latestCapability = 0;
+	const catalog = new FastCatalog({
+		resolveAuth: async () => activeContext?.modelRegistry.getProviderAuth(PROVIDER),
+		version: VERSION, offline: isOffline(process.env.PI_OFFLINE),
+	});
+	const modelKey = (ctx: ExtensionContext) => JSON.stringify([ctx.model?.provider, ctx.model?.api, ctx.model?.id, ctx.model?.baseUrl]);
+	async function readCapability(ctx: ExtensionContext): Promise<FastCapability | undefined> {
+		const owner = fastGeneration;
+		const revision = ++capabilityRevision;
+		const key = modelKey(ctx);
+		const session = ctx.sessionManager.getSessionId();
+		const capability = await catalog.read(ctx.model, usesCodexSubscription(ctx));
+		if (owner !== fastGeneration || key !== modelKey(ctx) || session !== ctx.sessionManager.getSessionId()) return undefined;
+		if (!usesCodexSubscription(ctx)) {
+			catalog.reset();
+			fast.setCapability({ kind: "unknown", reason: "Codex 登录已变化" });
+			if (controller) updateStatus(ctx, controller.getState());
+			return undefined;
+		}
+		if (revision >= latestCapability) {
+			latestCapability = revision;
+			fast.setCapability(capability);
+			if (controller) updateStatus(ctx, controller.getState());
+		}
+		return capability;
+	}
 
 	function updateStatus(ctx: ExtensionContext, state: QuotaState): void {
 		if (ctx.mode !== "tui" || !ctx.hasUI) return;
@@ -164,22 +196,34 @@ export default function codexLimit(pi: ExtensionAPI): void {
 		}
 	}
 
-	pi.on("session_start", (_event, ctx) => {
+	pi.on("session_start", async (_event, ctx) => {
+		fastGeneration++;
+		preferenceRevision++;
+		catalog.reset();
 		activeContext = ctx;
 		stop(ctx);
 		fast.resetSession(restoreFastMode(ctx.sessionManager.getEntries(), ctx.sessionManager.getSessionId()));
 		startQuota(ctx);
+		if (fast.enabled && usesCodexSubscription(ctx)) await readCapability(ctx);
 	});
 
 	pi.on("model_select", (_event, ctx) => {
+		fastGeneration++;
+		preferenceRevision++;
 		activeContext = ctx;
 		fast.resetResponse();
+		fast.setCapability({ kind: "unknown" });
 		if (!usesCodexSubscription(ctx)) stop(ctx);
 		else startQuota(ctx);
+		if (fast.enabled && usesCodexSubscription(ctx)) void readCapability(ctx);
 	});
 
-	pi.on("before_provider_request", (event, ctx) => {
+	pi.on("before_provider_request", async (event, ctx) => {
 		activeContext = ctx;
+		const owner = fastGeneration;
+		const key = modelKey(ctx);
+		if (fast.enabled && usesCodexSubscription(ctx)) await readCapability(ctx);
+		if (owner !== fastGeneration || key !== modelKey(ctx)) return undefined;
 		const payload = fast.transform(event.payload, ctx.model, usesCodexSubscription(ctx));
 		if (payload !== undefined && controller) updateStatus(ctx, controller.getState());
 		return payload;
@@ -201,6 +245,9 @@ export default function codexLimit(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
+		fastGeneration++;
+		preferenceRevision++;
+		catalog.reset();
 		stop(ctx);
 		fast.setEnabled(false);
 		activeContext = undefined;
@@ -217,8 +264,19 @@ export default function codexLimit(pi: ExtensionAPI): void {
 			}
 			const enabled = value === "on";
 			if (enabled && !usesCodexSubscription(ctx)) {
-				ctx.ui.notify("Fast 仅适用于 Codex 订阅 OAuth 模型，请先切换到 openai-codex。", "warning");
+				ctx.ui.notify("Fast 仅适用于官方 Codex 订阅 OAuth 模型，请先切换到 openai-codex。", "warning");
 				return;
+			}
+			const revision = ++preferenceRevision;
+			const owner = fastGeneration;
+			const session = ctx.sessionManager.getSessionId();
+			if (enabled) {
+				const capability = await readCapability(ctx);
+				if (!capability || !usesCodexSubscription(ctx) || revision !== preferenceRevision || owner !== fastGeneration || session !== ctx.sessionManager.getSessionId()) return;
+				if (capability.kind !== "supported") {
+					ctx.ui.notify(capability.reason ?? (capability.kind === "unsupported" ? "当前模型的官方目录不支持 Fast。" : "当前模型的 Fast 能力未知，未启用 Fast。"), "warning");
+					return;
+				}
 			}
 			try {
 				pi.appendEntry(FAST_ENTRY, { enabled, sessionId: ctx.sessionManager.getSessionId() });
@@ -228,7 +286,7 @@ export default function codexLimit(pi: ExtensionAPI): void {
 			}
 			fast.setEnabled(enabled);
 			if (controller) updateStatus(ctx, controller.getState());
-			ctx.ui.notify(enabled ? "Fast 已开启，仅当前会话；订阅额度按标准的 2.5 倍消耗，实际档位以服务端返回为准。"
+			ctx.ui.notify(enabled ? "Fast 路由已开启，仅当前会话（priority）；订阅额度按标准的 2.5 倍消耗。面板独立显示服务端返回档位。"
 				: "Fast 已关闭，仅当前会话。", "info");
 		},
 	});
@@ -244,6 +302,7 @@ export default function codexLimit(pi: ExtensionAPI): void {
 				return;
 			}
 			const instance = getController(ctx);
+			if (usesCodexSubscription(ctx)) await readCapability(ctx);
 			await instance.refresh();
 			if (controller !== instance) return; // Context may have been invalidated while awaiting auth.
 			if (ctx.mode === "tui") {

@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { FAST_ENTRY, FastModeController, isCodexSubscription, restoreFastMode } from "../src/fast-mode.ts";
 import type { FastModel } from "../src/fast-mode.ts";
 
-const model: FastModel = { id: "gpt-6.1-sol", provider: "openai-codex", api: "openai-codex-responses" };
+const model: FastModel = { id: "gpt-6.1-sol", provider: "openai-codex", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api" };
 const request = () => ({ model: model.id, input: [{ role: "user", content: "synthetic prompt" }],
 	service_tier: "default", reasoning: { effort: "high" }, tools: [{ type: "function", name: "synthetic_tool" }],
 	prompt_cache_key: "synthetic-cache", stream: true });
@@ -20,6 +20,11 @@ test("only the Codex subscription provider, responses API and OAuth qualify", ()
 		assert.equal(isCodexSubscription(candidate, true), false);
 	}
 	assert.equal(isCodexSubscription(model, false), false);
+	for (const baseUrl of [undefined, "", "not-a-url", "https://chatgpt.com.example.invalid/backend-api", "http://chatgpt.com/backend-api",
+		"https://api.openai.com/v1", "https://proxy.example.invalid/backend-api"]) {
+		assert.equal(isCodexSubscription({ ...model, baseUrl } as unknown as FastModel, true), false, `unexpected official subscription: ${baseUrl}`);
+	}
+	assert.equal(isCodexSubscription({ ...model, baseUrl: "https://chatgpt.com/backend-api/codex" }, true), true);
 });
 
 test("restoration uses the latest valid choice in this session and never inherits a fork", () => {
@@ -39,30 +44,100 @@ test("malformed and unrelated custom entries cannot enable Fast", () => {
 	assert.equal(restoreFastMode([entry(true), ...invalid], "session-A"), true);
 });
 
-test("Fast starts off and leaves even a preexisting service tier untouched", () => {
+test("Fast starts off and explicitly chooses the default request tier", () => {
 	const fast = new FastModeController();
 	const payload = request();
 	assert.equal(fast.enabled, false);
-	assert.equal(fast.transform(payload, model, true), undefined);
+	assert.deepEqual(fast.transform(payload, model, true), { ...payload, service_tier: "default" });
 	assert.equal(payload.service_tier, "default");
 	assert.equal(fast.suffix(), "");
 });
 
+test("priority requires both an enabled preference and an explicitly supported catalog capability", () => {
+	for (const enabled of [false, true]) {
+		for (const kind of ["supported", "unsupported", "unknown"] as const) {
+			const fast = new FastModeController();
+			fast.setCapability({ kind });
+			fast.setEnabled(enabled);
+			const payload = { ...request(), service_tier: "priority" };
+			const tier = enabled && kind === "supported" ? "priority" : "default";
+			assert.deepEqual(fast.transform(payload, model, true), { ...payload, service_tier: tier });
+			assert.equal(payload.service_tier, "priority", "original payload remains untouched");
+			assert.equal(fast.suffix(), !enabled ? "" : kind === "supported" ? " · Fast"
+				: kind === "unknown" ? " · Fast能力未知" : " · Fast不可用");
+		}
+	}
+});
+
+test("an unknown initial capability cannot send priority even with the session preference enabled", () => {
+	const fast = new FastModeController();
+	fast.setEnabled(true);
+	assert.equal(fast.capability.kind, "unknown");
+	assert.deepEqual(fast.transform(request(), model, true), { ...request(), service_tier: "default" });
+	assert.equal(fast.suffix(), " · Fast能力未知");
+	fast.setCapability({ kind: "supported" });
+	assert.equal(fast.suffix(), " · Fast");
+	fast.setCapability({ kind: "unsupported", reason: "Synthetic unsupported model" });
+	assert.equal(fast.suffix(), " · Fast不可用");
+	fast.resetSession(true);
+	assert.equal(fast.enabled, true);
+	assert.equal(fast.capability.kind, "unknown");
+	assert.equal(fast.phase, "idle");
+});
+
+test("server diagnostics cannot override a supported Fast preference in the footer", () => {
+	for (const tier of ["default", "fast", "priority", undefined, "auto"]) {
+		const fast = new FastModeController();
+		fast.setCapability({ kind: "supported" });
+		fast.setEnabled(true);
+		fast.transform(request(), model, true);
+		fast.observe(event(tier));
+		assert.equal(fast.suffix(), " · Fast");
+		if (tier === "default") assert.equal(fast.phase, "standard");
+	}
+});
+
+test("details separate catalog capability, requested route and the server's actual reported tier", () => {
+	const fast = new FastModeController();
+	fast.setCapability({ kind: "supported" });
+	fast.setEnabled(true);
+	fast.transform(request(), model, true);
+	fast.observe(event("default"));
+	let output = fast.details(model, true).join("\n");
+	assert.match(output, /模型能力：支持 Fast/);
+	assert.match(output, /请求档位：priority/);
+	assert.match(output, /最近服务端档位：.*default/);
+	assert.equal(fast.suffix(), " · Fast");
+	fast.setEnabled(false);
+	fast.transform(request(), model, true);
+	fast.observe(event("default"));
+	output = fast.details(model, true).join("\n");
+	assert.match(output, /请求档位：default/);
+	assert.match(output, /最近服务端档位：.*default/);
+	assert.equal(fast.suffix(), "");
+	fast.setEnabled(true);
+	fast.transform(request(), model, true);
+	fast.observe(event(undefined));
+	assert.match(fast.details(model, true).join("\n"), /最近服务端档位：未返回/);
+});
+
 test("Fast replaces only service_tier while preserving model, reasoning, tools, cache and input", () => {
 	const fast = new FastModeController();
+	fast.setCapability({ kind: "supported" });
 	fast.setEnabled(true);
 	const payload = request();
 	const before = structuredClone(payload);
 	const transformed = fast.transform(payload, model, true);
-	assert.deepEqual(transformed, { ...before, service_tier: "fast" });
+	assert.deepEqual(transformed, { ...before, service_tier: "priority" });
 	assert.deepEqual(payload, before, "the original provider payload is never mutated");
 	assert.notEqual(transformed, payload);
 	assert.equal(fast.phase, "requested");
-	assert.equal(fast.suffix(), " · Fast待确认");
+	assert.equal(fast.suffix(), " · Fast");
 });
 
 test("non-subscription models, absent OAuth and unrelated payload shapes stay unchanged", () => {
 	const fast = new FastModeController();
+	fast.setCapability({ kind: "supported" });
 	fast.setEnabled(true);
 	for (const candidate of [{ ...model, provider: "openai" }, { ...model, provider: "anthropic" }, { ...model, api: "other-api" }, undefined]) {
 		assert.equal(fast.transform(request(), candidate, true), undefined);
@@ -76,8 +151,9 @@ test("non-subscription models, absent OAuth and unrelated payload shapes stay un
 
 test("Fast confirmation, standard fallback and missing or unknown tiers are distinguished", () => {
 	for (const [tier, phase, suffix] of [["fast", "fast", " · Fast"], ["priority", "fast", " · Fast"],
-		["default", "standard", " · Fast未生效"], [undefined, "unknown", " · Fast未确认"], ["auto", "unknown", " · Fast未确认"]]) {
+		["default", "standard", " · Fast"], [undefined, "unknown", " · Fast"], ["auto", "unknown", " · Fast"]]) {
 		const fast = new FastModeController();
+		fast.setCapability({ kind: "supported" });
 		fast.setEnabled(true);
 		fast.transform(request(), model, true);
 		fast.observe(event(tier));
@@ -88,6 +164,7 @@ test("Fast confirmation, standard fallback and missing or unknown tiers are dist
 
 test("response identity and provider/model filtering prevent unrelated completion from confirming Fast", () => {
 	const fast = new FastModeController();
+	fast.setCapability({ kind: "supported" });
 	fast.setEnabled(true);
 	fast.transform(request(), model, true);
 	fast.observe(event("fast", { type: "response.created" }));
@@ -104,6 +181,7 @@ test("response identity and provider/model filtering prevent unrelated completio
 
 test("invalid stream data and unfinished requests never claim acceleration", () => {
 	const fast = new FastModeController();
+	fast.setCapability({ kind: "supported" });
 	fast.setEnabled(true);
 	fast.transform(request(), model, true);
 	for (const data of [undefined, null, [], {}, { type: "response.completed", response: [] }]) {
@@ -118,9 +196,10 @@ test("invalid stream data and unfinished requests never claim acceleration", () 
 
 test("overlapping cache-warming and foreground responses remain unconfirmed across turns until session reset", () => {
 	const fast = new FastModeController();
+	fast.setCapability({ kind: "supported" });
 	fast.setEnabled(true);
-	assert.deepEqual(fast.transform(request(), model, true), { ...request(), service_tier: "fast" });
-	assert.deepEqual(fast.transform(request(), model, true), { ...request(), service_tier: "fast" });
+	assert.deepEqual(fast.transform(request(), model, true), { ...request(), service_tier: "priority" });
+	assert.deepEqual(fast.transform(request(), model, true), { ...request(), service_tier: "priority" });
 	fast.observe(event("fast", { id: "cache-response" }));
 	assert.equal(fast.phase, "unknown");
 	fast.observe(event("priority", { id: "foreground-response" }));
@@ -133,6 +212,7 @@ test("overlapping cache-warming and foreground responses remain unconfirmed acro
 	fast.observe(event("fast", { id: "next-turn-response" }));
 	assert.equal(fast.phase, "unknown", "agent settlement cannot establish that a background stream has ended");
 	fast.resetSession(true);
+	fast.setCapability({ kind: "supported" });
 	fast.transform(request(), model, true);
 	fast.observe(event("fast", { id: "new-runtime-response" }));
 	assert.equal(fast.phase, "fast", "a fresh session runtime can confirm Fast again");
@@ -140,6 +220,7 @@ test("overlapping cache-warming and foreground responses remain unconfirmed acro
 
 test("a late background completion cannot confirm a later turn after settle, toggles or model changes", () => {
 	const fast = new FastModeController();
+	fast.setCapability({ kind: "supported" });
 	fast.setEnabled(true);
 	fast.transform(request(), model, true); // Foreground A.
 	fast.transform(request(), model, true); // Background cache warming W.
@@ -160,6 +241,7 @@ test("a late background completion cannot confirm a later turn after settle, tog
 	fast.resetSession(false);
 	assert.equal(fast.enabled, false);
 	assert.equal(fast.phase, "idle");
+	fast.setCapability({ kind: "supported" });
 	fast.setEnabled(true);
 	fast.transform(request(), model, true);
 	fast.observe(event("fast", { id: "new-session-foreground" }));
@@ -169,11 +251,12 @@ test("a late background completion cannot confirm a later turn after settle, tog
 test("failed and incomplete responses remain unconfirmed even when a Fast tier is present", () => {
 	for (const type of ["response.failed", "response.incomplete"]) {
 		const fast = new FastModeController();
+		fast.setCapability({ kind: "supported" });
 		fast.setEnabled(true);
 		fast.transform(request(), model, true);
 		fast.observe(event("fast", { type }));
 		assert.equal(fast.phase, "unknown");
-		assert.equal(fast.suffix(), " · Fast未确认");
+		assert.equal(fast.suffix(), " · Fast");
 		assert.match(fast.details(model, true).join("\n"), /请求失败/);
 	}
 });
@@ -181,6 +264,7 @@ test("failed and incomplete responses remain unconfirmed even when a Fast tier i
 test("clearing a pending request retains ambiguity even when no requests previously overlapped", () => {
 	for (const reset of ["off/on", "resetResponse", "settle", "on-again"]) {
 		const fast = new FastModeController();
+		fast.setCapability({ kind: "supported" });
 		fast.setEnabled(true);
 		fast.transform(request(), model, true); // A is the only request so far.
 		assert.equal(fast.phase, "requested");
@@ -194,6 +278,7 @@ test("clearing a pending request retains ambiguity even when no requests previou
 		assert.equal(fast.phase, "unknown", `${reset} must not attribute late A to B`);
 		fast.transform(request(), model, true); // Keep another pending request at runtime reset.
 		fast.resetSession(true);
+		fast.setCapability({ kind: "supported" });
 		assert.equal(fast.phase, "idle", "session reset clears pending evidence without latching it again");
 		fast.transform(request(), model, true);
 		fast.observe(event("fast", { id: "fresh-runtime-response" }));
@@ -203,6 +288,7 @@ test("clearing a pending request retains ambiguity even when no requests previou
 
 test("turn settlement retains confirmed tiers but toggles and model changes clear old response state", () => {
 	const fast = new FastModeController();
+	fast.setCapability({ kind: "supported" });
 	fast.setEnabled(true);
 	fast.transform(request(), model, true);
 	fast.observe(event("fast"));
@@ -222,6 +308,7 @@ test("turn settlement retains confirmed tiers but toggles and model changes clea
 test("details describe the session-only switch and sanitize terminal-control model names", () => {
 	const fast = new FastModeController();
 	assert.match(fast.details(model, true).join("\n"), /关闭（仅当前会话）/);
+	fast.setCapability({ kind: "supported" });
 	fast.setEnabled(true);
 	assert.match(fast.details(model, true).join("\n"), /2\.5 倍/);
 	assert.match(fast.details(model, true).join("\n"), /\/fast on 或 \/fast off；新会话默认关闭/);

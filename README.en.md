@@ -19,9 +19,9 @@ The server determines window counts and lengths. Accounts are not guaranteed to 
 ## What's new in v0.3.0
 
 - Added `/fast on` and `/fast off` as the only Fast controls. New sessions default to off; resuming or reloading the same session restores its choice. New and forked sessions do not inherit it.
-- Requests ordinary Fast only for `openai-codex` OAuth subscription models using `openai-codex-responses`. Other providers and regular OpenAI API requests are unchanged.
-- `/codex-limit` shows the session preference, model, and server tier. The footer shows `· Fast` only after server confirmation. Switching to another model hides the entire Codex status; switching back restores it.
-- Standardized the footer icon as `🍧` and synchronized the package entry, both core modules, and standalone autoload output, with no new runtime dependencies.
+- Queries the current account's official model capability catalog. Ordinary Fast applies only to supported `openai-codex` OAuth subscription models using the official `chatgpt.com` endpoint. Enabled requests use `priority`; disabled requests use `default`. Other providers and regular OpenAI API requests are unchanged.
+- `/codex-limit` separately shows the session preference, model capability, requested tier, and last observed server tier. `· Fast` means capability is supported and the preference is enabled, rather than server confirmation or measured speed. Switching to another model hides the entire Codex status; switching back restores it.
+- Standardized the footer icon as `🍧` and synchronized the package entry, all three core modules, and standalone autoload output, with no new runtime dependencies.
 
 ## What's new in v0.2.3
 
@@ -51,7 +51,7 @@ The server determines window counts and lengths. Accounts are not guaranteed to 
 
 ## Installation and trials
 
-Requires Node.js >=22.19 and a pi host exposing `modelRegistry.getProviderAuth()`, `before_provider_request`, and `provider_stream_event`. Development types and integration tests use **1.0.4**; the local **1.2.0** host passed offline loading and command-registration checks. At runtime, pi supplies the host packages without a separate runtime dependency installation; the full offline test suite and type checking require this project's development dependencies. Project-maintained TypeScript runs natively in Node without compiled artifacts or an extra runner. Development type checking requires the development dependencies.
+Requires Node.js >=22.19 and a pi host exposing `modelRegistry.getProviderAuth()`, `before_provider_request`, and `provider_stream_event`. Development types and integration tests use **1.2.0**, verified by full-pipeline Pi SDK tests (`createAgentSession` + `ExtensionRunner`) as well as offline loading and command-registration checks. At runtime, pi supplies the host packages without a separate runtime dependency installation; the full offline test suite and type checking require this project's development dependencies. Project-maintained TypeScript runs natively in Node without compiled artifacts or an extra runner. Development type checking requires the development dependencies.
 
 After cloning, run these commands from the project root containing `package.json` (or the `package/` directory after extracting a `.tgz`):
 
@@ -87,7 +87,7 @@ After installing or updating, restart pi or run `/reload` in an existing session
 
 **Enable either the installed package or the standalone file at `~/.pi/agent/extensions/codex-limit.ts`, never both.** Loading both may register duplicate commands, statuses, and queries. If a standalone copy exists, disable the old source with `pi config`, or back it up and move it out of the autoload directory. Trial commands use `-ne` to isolate other extensions.
 
-`extensions/index.ts` depends on `src/quota.ts` and `src/fast-mode.ts` and cannot be copied to the autoload directory on its own. For a standalone deployment, explicitly run from the project root:
+`extensions/index.ts` depends on `src/quota.ts`, `src/fast-mode.ts`, and `src/fast-catalog.ts` and cannot be copied to the autoload directory on its own. For a standalone deployment, explicitly run from the project root:
 
 ```bash
 npm run sync-autoload
@@ -119,7 +119,7 @@ No `.env` or API key is required. A regular `OPENAI_API_KEY`, login to the `open
 | Command | Behavior |
 |---|---|
 | `/codex-limit` | Shows quota, reset-credit, and Fast details; refreshes stale data when not in backoff or cooldown |
-| `/fast on` | Enables ordinary Fast for this session; requires an active Codex subscription OAuth model |
+| `/fast on` | Enables ordinary Fast after catalog validation; requires an active official Codex subscription OAuth model |
 | `/fast off` | Disables Fast for this session |
 
 The centered detail panel contains a plan summary, remaining-quota progress bars, reset countdowns, reset-credit details, and an update timestamp. Each window independently uses its raw remaining ratio: **at ≤20%, including exactly 20% and 0%, its progress bar turns light red**, with colors adapted to light and dark themes. A low window does not change another window's bar. This only affects detail progress bars; footer color thresholds and stale/restricted indicators remain unchanged.
@@ -130,15 +130,15 @@ Reset credits correspond to the Codex usage page's usage-limit reset feature, no
 
 ### Session-local Fast mode
 
-Use only `/fast on` and `/fast off` to switch. The `/codex-limit` panel displays the preference, current model, actual server tier, and usage multiplier. It has no Fast button or `f` shortcut, and there is no `/fast status`, `/codex-limit fast` subcommand, or startup flag. Bare `/fast` and invalid arguments show usage without changing the preference or querying quota.
+The only switches are `/fast on` and `/fast off`. The `/codex-limit` panel shows the session preference, current model, Fast capability, requested tier, last observed server tier, and usage multiplier. Bare `/fast` and invalid arguments show usage without changing the preference. The panel displays Fast information without a toggle button.
 
-New sessions default to off. The choice is stored as a custom session entry bound to the current session ID. Resuming the same session or running `/reload` restores it, without a global configuration file or a message in model context. New and forked sessions default to off even if their history contains copied entries. A failed save leaves the previous preference unchanged. Switching models retains the session preference but clears the old server confirmation; switching back awaits confirmation from a new request.
+New sessions default to off. The choice is stored as a custom session entry bound to the current session ID. Resuming the same session or running `/reload` restores it without a global configuration file or a message in model context. New and forked sessions default to off even if their history contains copied entries. A failed save preserves the previous preference. Switching models retains the preference and clears old response observations.
 
-Fast applies only when the current model has **provider `openai-codex`, API `openai-codex-responses`, and OAuth subscription authentication**. When enabled, the public `before_provider_request` hook adds `service_tier: "fast"` to a matching model request while preserving its other parameters. When disabled, requests are untouched. Switching to another provider, regular `openai` API, or an ineligible model hides the entire Codex footer status and leaves its requests unchanged. Switching back restores it. `/fast on` with an ineligible model asks you to switch first and preserves the existing choice.
+Fast applies only when the current model has **the official `chatgpt.com` endpoint, provider `openai-codex`, API `openai-codex-responses`, and OAuth subscription authentication**. The extension queries `GET /backend-api/codex/models?client_version=<Pi version>` for the current account and reports capability as supported, unsupported, or unknown from the catalog, without guessing from model names. Results are cached in memory for 5 minutes; failed queries back off for 30 seconds. Account changes isolate old results, and offline mode skips querying. Missing catalog data and query failures report unknown capability.
 
-The public `provider_stream_event` hook observes server completion events. A `fast` or `priority` tier confirms Fast; `default` means the server used the standard tier. Missing or unknown tiers and failed or incomplete responses remain unconfirmed. Overlapping foreground and background requests to the same model also remain unconfirmed when their responses cannot be attributed reliably. After such an overlap, the current loaded instance stays unconfirmed; settling a turn, toggling off/on, or switching models does not clear the ambiguity. Reloading or resuming the session starts a new lifecycle that awaits confirmation from a new request. Normal requests without overlap are unaffected. Sending the Fast parameter alone does not confirm acceleration. The extension does not automatically retry or resend at another tier. Changing the switch does not affect requests already sent.
+`/fast on` validates capability before saving the session preference and enables it only when the catalog explicitly supports the current model. Unknown/unsupported capability or an ineligible model produces an explanation and preserves the existing preference. For matching official subscription model requests, the public `before_provider_request` hook sets `service_tier: "priority"` when enabled and supported; when disabled it explicitly sets `service_tier: "default"`. Other request parameters are preserved. A retained enabled preference does not request Fast when capability becomes unknown or unsupported. Switching to another provider, regular `openai` API, or an unofficial endpoint hides the entire Codex status and leaves its requests unchanged. Switching back restores it. Changing the switch does not affect requests already sent.
 
-Example after server confirmation:
+Example when capability is supported and the session preference is enabled:
 
 ```text
 🍧 Codex 额度：5h 78% (↻2h) 7d 64% (↻3d) · Fast
@@ -147,13 +147,14 @@ Example after server confirmation:
 | State | Footer suffix |
 |---|---|
 | Disabled | None |
-| Enabled, awaiting request confirmation | `· Fast待确认` |
-| Server confirms Fast | `· Fast` |
-| Server returns standard tier | `· Fast未生效` |
-| Missing/unknown tier, failed/incomplete response, or ambiguous concurrent response | `· Fast未确认` |
-| Other provider or non-subscription model | Entire Codex footer status hidden |
+| Enabled with supported capability | `· Fast` |
+| Retained enabled preference with unknown capability | `· Fast能力未知` |
+| Retained enabled preference with unsupported capability | `· Fast不可用` |
+| Other provider or unofficial/non-subscription model | Entire Codex footer status hidden |
 
-Ordinary Fast consumes subscription quota at **2.5 times** the standard rate. Availability depends on the model, account, and server. This version does not enable Ultrafast, has not measured live model speed, and promises no fixed speedup. See [OpenAI's speed documentation](https://learn.chatgpt.com/docs/agent-configuration/speed) and [pi's public extension event and session interfaces](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/extensions/types.ts).
+The footer's `· Fast` means supported capability plus an enabled session preference; **it does not confirm the actual server tier or a speed increase**. The panel separately reports the last observed server tier: `priority` / `fast` show Fast, `default` shows “服务端返回标准档位” (server returned the standard tier), and missing tiers show “未返回” (not returned). Failed/incomplete responses or ambiguous concurrent responses show “无法确认” (cannot confirm). After overlapping foreground/background requests to the same model, this loaded instance stops attributing subsequent responses until a reload or session resume starts a new lifecycle. This affects observations only, not capability or the footer preference. The extension does not automatically retry or resend model requests at another tier.
+
+Ordinary Fast consumes subscription quota at **2.5 times** the standard rate. This version does not enable Ultrafast, has not measured live model speed, and promises no fixed speedup. See [OpenAI's speed documentation](https://learn.chatgpt.com/docs/agent-configuration/speed), [upstream pi-usage Fast implementation](https://github.com/narumiruna/pi-extensions/blob/main/packages/pi-usage/src/codex-fast.ts) for the design, and [pi's public extension event and session interfaces](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/extensions/types.ts).
 
 ### Manually redeem a reset credit
 
@@ -196,12 +197,13 @@ pi --offline -ne -e .
 
 ## Security and API limitations
 
-- Queries send GET requests only to `https://chatgpt.com/backend-api/wham/usage` and `https://chatgpt.com/backend-api/wham/rate-limit-reset-credits`. Only selecting and explicitly confirming a credit in the detail panel sends one POST to `https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume`, with the selected `credit_id` and a UUID `redeem_request_id` generated for that operation. Requests carry the OAuth Bearer token and account-routing header, reject redirects, and do not allow custom endpoints.
+- Quota and reset-credit queries send GET requests only to `https://chatgpt.com/backend-api/wham/usage` and `https://chatgpt.com/backend-api/wham/rate-limit-reset-credits`. Only selecting and explicitly confirming a credit in the detail panel sends one POST to `https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume`, with the selected `credit_id` and a UUID `redeem_request_id` generated for that operation. Requests carry the OAuth Bearer token and account-routing header, reject redirects, and do not allow custom endpoints.
+- Fast capability queries send GET requests only to the official `https://chatgpt.com/backend-api/codex/models` endpoint with a Pi version parameter, using current subscription account authentication, rejecting redirects, with a 10-second timeout and an 8 MiB response limit. No catalog queries or Fast parameters are sent to custom endpoints. Only capability data for one account is cached in memory; account or token changes clear the cache. Credentials and raw responses are not recorded.
 - Public state retains only counts, known statuses, types, and timestamps. Credit IDs, account associations, and duplicate-prevention locks remain in private controller memory. The redemption request ID is used only for that request, never written to the UI, session, logs, or disk. Raw user information, titles, descriptions, and similar fields are discarded.
 - A host-issued JWT payload is parsed in memory to obtain the routing account ID. **This is not JWT signature verification.**
 - Access/refresh tokens, account IDs, raw authentication errors, and full responses are never recorded in sessions or ordinary logs.
 - Extensions retain the same system permissions as pi. Load trusted code only.
-- These are internal Codex usage endpoints, **not stable public OpenAI Platform APIs**. They may change or reject requests. Reauthenticate in pi after HTTP 401/403; check your environment for network or proxy problems.
+- These are internal Codex usage and model-catalog endpoints, **not stable public OpenAI Platform APIs**. They may change or reject requests. Reauthenticate in pi after HTTP 401/403; check your environment for network or proxy problems.
 - The extension currently shows primary windows from `rate_limit`. It does not mix model-specific quotas, code-review quotas, credits, or other fields into primary quota. Sufficient quota does not guarantee model-service capacity.
 - Reset times are reported from the server without inferring fixed weekly calendar cycles or promising quota recovery.
 
@@ -213,7 +215,7 @@ Run from the project root:
 
 ```bash
 # Core and synchronization tests only: no extra dependencies needed
-node --test tests/codex-limit.test.ts tests/fast-mode.test.ts tests/sync-autoload.test.ts
+node --test tests/codex-limit.test.ts tests/fast-mode.test.ts tests/catalog.test.ts tests/sync-autoload.test.ts
 
 # Full tests and type checking: install this project's development dependencies
 # without installing the extension, changing global pi, or running install scripts
@@ -227,9 +229,9 @@ npm run check      # Type checking and all offline tests
 pi --offline -ne -e . --help
 ```
 
-The full suite's entry integration tests use pi host development dependencies. Type checking uses TypeScript, Node types, and pi 1.0.4 host packages as development-only dependencies. At runtime, pi supplies those packages; they are neither runtime dependencies nor bundled into the extension. `tsconfig.json` enables strict checks, unused-declaration checks, and erasable-syntax restrictions. Native Node execution strips types but does not replace `npm run typecheck`.
+The full suite's entry integration tests use pi host development dependencies and drive real provider serialization over simulated transports through full-pipeline Pi SDK tests (`createAgentSession` + `ExtensionRunner`) to verify slash commands and request tiers. Type checking uses TypeScript, Node types, and pi 1.2.0 host packages as development-only dependencies. At runtime, pi supplies those packages; they are neither runtime dependencies nor bundled into the extension. `tsconfig.json` enables strict checks, unused-declaration checks, and erasable-syntax restrictions. Native Node execution strips types but does not replace `npm run typecheck`.
 
-Tests retain all quota/redemption cases, add Fast request transformations, server tiers, commands, session restoration, and model switching, and cover explicit and default output paths for the TypeScript synchronization script. Both synchronization cases use temporary directories and a temporary HOME, without writing to the real pi autoload directory. Tests use only synthetic JWTs, fake authentication, fake HTTP responses, fake selection UI, and controlled time. They cover ratio/window/reset parsing, confirmation and cancellation, a single POST for the selected credit, the four official return codes, unresolved-operation locks, account switches, timeouts, sanitized errors, throttling, single-flight execution, backoff, rate limits, and shutdown cleanup. They never redeem real credits.
+Tests retain all quota/redemption cases, add model catalogs, capability caching/backoff, Fast request transformations, server tiers, commands, session restoration, and model switching, and cover explicit and default output paths for the TypeScript synchronization script. Both synchronization cases use temporary directories and a temporary HOME, without writing to the real pi autoload directory. Tests use only synthetic JWTs, fake authentication, fake HTTP responses, fake selection UI, and controlled time. They cover ratio/window/reset parsing, confirmation and cancellation, a single POST for the selected credit, the four official return codes, unresolved-operation locks, account switches, timeouts, sanitized errors, throttling, single-flight execution, backoff, rate limits, and shutdown cleanup. They never redeem real credits.
 
 The help command does not query real quota, but alone cannot prove extension loading or real account access. An offline interactive trial can verify HUD and command registration.
 
@@ -254,10 +256,13 @@ codex-limit/
 ├── extensions/index.ts             # pi entry point, HUD, command, and overlay
 ├── src/quota.ts                   # parsing, requests, and state machine tested offline
 ├── src/fast-mode.ts               # session-local Fast and server-tier state
+├── src/fast-catalog.ts            # official model catalog, capability cache, and backoff
 ├── tests/codex-limit.test.ts
 ├── tests/fast-mode.test.ts
+├── tests/catalog.test.ts
 ├── tests/extension.test.ts         # commands, sessions, and model-switch integration
 ├── tests/transport.test.ts         # offline host HTTP/WebSocket serializer checks
+├── tests/host.test.ts              # full-pipeline Pi SDK checks (createAgentSession + ExtensionRunner)
 ├── tests/sync-autoload.test.ts    # synchronization tests in temporary directories
 ├── scripts/sync-autoload.ts       # explicitly synchronizes the pi autoload copy
 ├── tsconfig.json                 # type checking only; no JavaScript output
