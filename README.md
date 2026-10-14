@@ -134,7 +134,7 @@ npm run sync-autoload -- /tmp/codex-limit.ts
 
 Fast 请求注入仅适用于 **`openai-codex` provider 和 `openai-codex-responses` API 同时匹配的当前模型**。Fast 开关不再依赖 `isUsingOAuth()` 的同步结果，以免宿主尚未标记 OAuth 时错误拒绝；额度查询仍单独要求 OAuth，Fast 是否真正可用由服务端决定。开启后，扩展通过公开 `before_provider_request` 钩子为匹配模型的请求设置 Codex 订阅接口要求的 `service_tier: "priority"`，保留其他参数；公开 Responses API 的 `fast` 值不能用于这个订阅接口。关闭时不修改请求。切换至其他供应商、普通 `openai` API 或不符合条件的模型后，整条 Codex 状态栏隐藏，不显示 Fast 标记，不更改其请求；切回符合条件的模型后恢复。非 Codex Responses 模型下执行 `/fast on` 会提示先切换模型，原选择不变。
 
-通过公开 `provider_stream_event` 钩子观察服务端完成事件，`fast` / `priority` 表示 Fast 已确认，`default` 表示服务端使用标准档位；缺失或未知档位、失败或不完整响应均显示未确认；前台与后台同模型请求重叠、无法确定响应归属时也显示未确认。发生这种重叠后，本次加载期间保持未确认，结束本轮、关闭再开启或切换模型都不会清除歧义；重新加载或恢复会话后等待新请求确认。无并发的正常请求不受影响。发送 Fast 参数不代表已经加速，扩展不自动重试或降级重发。开关变化不影响已发送的请求。
+通过公开 `provider_stream_event` 钩子观察服务端完成事件，`fast` / `priority` 表示 Fast 已确认，`standard` 表示服务端明确使用标准档位；`default` 不能证实 Fast 失败（pi 可能按请求的 `priority` 档位解析），因此与缺失或未知档位、失败或不完整响应一样显示未确认；前台与后台同模型请求重叠、无法确定响应归属时也显示未确认。发生这种重叠后，本次加载期间保持未确认，结束本轮、关闭再开启或切换模型都不会清除歧义；重新加载或恢复会话后等待新请求确认。无并发的正常请求不受影响。发送 Fast 参数不代表已经加速，扩展不自动重试或降级重发。开关变化不影响已发送的请求。
 
 服务端确认后的页脚示例：
 
