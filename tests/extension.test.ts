@@ -175,7 +175,7 @@ test("same-session tree navigation retains the session-wide preference", async (
 	assert.equal(h.entries.length, 1);
 });
 
-test("switching providers hides the complete status and restores Fast only on return to subscription OAuth", async () => {
+test("switching providers hides quota status, but Fast is not blocked by OAuth detection", async () => {
 	const h = harness();
 	await start(h);
 	await h.command("fast", "on");
@@ -190,18 +190,18 @@ test("switching providers hides the complete status and restores Fast only on re
 		assert.equal(h.status(), undefined);
 		await h.command("fast", "on");
 		assert.equal(h.entries.length, 1, "rejected on must not overwrite stored session preference");
-		assert.match(h.notices.at(-1)!.message, /仅适用于 Codex 订阅 OAuth/);
+		assert.match(h.notices.at(-1)!.message, /仅适用于 openai-codex Responses/);
 	}
 	h.rawContext.model = codex;
 	h.setOAuth(false);
 	await h.fire("model_select");
 	assert.equal(h.status(), undefined);
-	assert.equal(await h.fire("before_provider_request", { payload: payload() }), undefined);
+	assert.deepEqual(await h.fire("before_provider_request", { payload: payload() }), { ...payload(), service_tier: "priority" });
 	await h.command("fast", "on");
-	assert.equal(h.entries.length, 1);
+	assert.equal(h.entries.length, 2, "OAuth detection must not reject the Fast command");
 	h.setOAuth(true);
 	await h.fire("model_select");
-	assert.match(h.status()!, /Fast待确认/);
+	assert.match(h.status()!, /Fast未确认/, "an in-flight request cannot be confirmed by model selection");
 	assert.equal(h.authCalls, 0);
 });
 
@@ -217,6 +217,16 @@ test("/fast off can clear the retained session preference while another provider
 	h.rawContext.model = codex;
 	await h.fire("model_select");
 	assert.ok(!h.status()?.includes("Fast"));
+});
+
+test("Fast can be enabled with Codex API even when the host OAuth flag is unavailable", async () => {
+	const h = harness({ oauth: false });
+	await start(h);
+	await h.command("fast", "on");
+	assert.equal(h.entries.at(-1)?.data.enabled, true);
+	assert.equal(h.status(), undefined, "quota HUD still requires OAuth");
+	assert.deepEqual(await h.fire("before_provider_request", { payload: payload() }), { ...payload(), service_tier: "priority" });
+	assert.equal(h.authCalls, 0);
 });
 
 test("provider request and stream events update Fast confirmation, fallback and unconfirmed status", async () => {
