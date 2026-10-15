@@ -1,6 +1,6 @@
 {
   "name": "pi-codex",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Pi extension: Codex 订阅额度、重置倒计时与会话内 Fast 模式。",
   "type": "module",
   "keywords": [

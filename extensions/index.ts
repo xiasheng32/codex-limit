@@ -3,7 +3,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { VERSION } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import { matchesKey, rgbColor, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import { detailLines, isLowQuota, isOffline, POLL_MS, PROVIDER, QuotaController, statusLine } from "../src/quota.ts";
+import { detailLines, detailSections, isLowQuota, isOffline, POLL_MS, PROVIDER, QuotaController, statusLine } from "../src/quota.ts";
 import type { QuotaState } from "../src/quota.ts";
 import { FAST_ENTRY, FastModeController, isCodexSubscription, restoreFastMode } from "../src/fast-mode.ts";
 import type { FastCapability } from "../src/fast-mode.ts";
@@ -39,60 +39,79 @@ export class QuotaPanel {
 
 	render(availableWidth: number): string[] {
 		const width = Math.max(0, Math.min(availableWidth, 68));
-		if (width === 0) return [];
+		const rows = Math.max(0, this.tui.terminal.rows);
+		if (width === 0 || rows === 0) return [];
+		// Leave room for the overlay's top and bottom margins when possible.
+		const height = Math.max(1, rows - 2);
+		const framed = width >= 24 && height >= 10;
+		const contentWidth = framed ? width - 4 : width;
 		const state = this.controller.getState();
 		const now = Date.now();
 		const theme = this.ctx.ui.theme;
 		const button = this.controller.getResetButton();
-		const buttonWidth = width < 6 || this.tui.terminal.rows < 10 ? width : Math.max(1, width - 4);
-		const label = button.phase === "ready" ? "[ ↻ 重置额度 · u ]" : button.phase === "busy" ? "[ ↻ 重置额度 · 处理中 ]" : "[ ↻ 重置额度 · 不可用 ]";
-		const shortLabel = button.enabled ? "[u 重置额度]" : button.phase === "busy" ? "[重置中]" : "[重置不可用]";
-		const buttonText = theme.style(truncateToWidth(buttonWidth < 24 ? shortLabel : label, buttonWidth), {
-			fg: button.enabled ? "accent" : button.phase === "busy" ? "warning" : "dim",
-			bg: "selectedBg", bold: true,
-		});
-		if (width < 6 || this.tui.terminal.rows < 10) {
-			const fastLines = this.fast.details(this.ctx.model, usesCodexSubscription(this.ctx));
-			const compact = [...fastLines.slice(1, 6), "", ...detailLines(state, now)]
-				.flatMap((line) => wrapTextWithAnsi(line, width));
-			const bodyHeight = Math.max(1, this.tui.terminal.rows - 2);
-			this.maxOffset = Math.max(0, compact.length - bodyHeight);
-			this.offset = Math.min(this.offset, this.maxOffset);
-			return [...compact.slice(this.offset, this.offset + bodyHeight), buttonText, "Enter/Esc 关闭 · ↑↓ 滚动"]
-				.slice(0, Math.max(0, this.tui.terminal.rows)).map((line) => truncateToWidth(line, width));
-		}
-		const inner = width - 2;
-		const contentWidth = Math.max(1, inner - 2);
-		const paint = (line: string) => {
-			if (line.startsWith("▸")) return theme.fg("accent", line);
-			if (/过期缓存|查询失败|查询限流|查询超时|格式异常|已到期|结果不确定|未完成|被拒绝/.test(line)) return theme.fg("warning", line);
-			if (line.startsWith("  ↻") || line.startsWith("     ") || /更新：|不会自动消费|不推断|未提供/.test(line)) return theme.fg("dim", line);
-			return line;
-		};
 		const lowQuotaColor = theme.appearance === "light" ? LOW_QUOTA_LIGHT : LOW_QUOTA_DARK;
-		const content = [...this.fast.details(this.ctx.model, usesCodexSubscription(this.ctx)), "", ...detailLines(state, now, contentWidth < 42 ? 12 : 24, (line, window) => {
-			// Use the original window, not rounded display text or the other window's minimum.
+		const sections = detailSections(state, now, contentWidth < 42 ? 12 : 24, (line, window) => {
+			// Judge each original window independently, never its rounded display text.
 			const color = statusLine({ ...state, snapshot: { ...state.snapshot!, windows: [window] } }, now).color;
 			return line.split(/([█░]+)/).map((part) => isLowQuota(window.remainingPercent) && /[█░]/.test(part)
 				? theme.style(part, { fg: lowQuotaColor }) : theme.fg(color, part)).join("");
-		})].flatMap((line) => wrapTextWithAnsi(paint(line), contentWidth));
-		const bodyHeight = Math.max(1, Math.min(24, this.tui.terminal.rows - (button.enabled ? 8 : 9)));
+		});
+		const updated = theme.fg("dim", truncateToWidth(sections.updated, contentWidth));
+		if (height === 1) {
+			this.offset = this.maxOffset = 0;
+			return [updated];
+		}
+		const heading = (title: string, summary = "") => {
+			const start = `── ${title} `;
+			const end = summary ? ` ${summary}` : "";
+			const remaining = contentWidth - visibleWidth(start) - visibleWidth(end);
+			return remaining < 2 ? theme.fg("accent", `${title}${summary ? ` · ${summary}` : ""}`)
+				: theme.fg("accent", start) + theme.fg("border", "─".repeat(remaining)) + theme.fg("accent", end);
+		};
+		const paint = (line: string) => {
+			if ((state.resetUse?.warning && line === state.resetUse.message)
+				|| /过期缓存|查询失败|查询限流|查询超时|格式异常|已到期|结果不确定|未完成|被拒绝/.test(line)) return theme.fg("warning", line);
+			if (line.startsWith("  ↻") || line.startsWith("     ") || /不推断|未提供/.test(line)) return theme.fg("dim", line);
+			return line;
+		};
+		const title = "🍧 Codex 额度";
+		const summaryFits = framed && sections.summary !== null
+			&& visibleWidth(title) + 2 + visibleWidth(sections.summary) <= contentWidth;
+		const header = theme.fg("accent", title) + (summaryFits
+			? " ".repeat(contentWidth - visibleWidth(title) - visibleWidth(sections.summary!)) + theme.fg("dim", sections.summary!) : "");
+		const lines: string[] = [];
+		if (!summaryFits && sections.summary) lines.push(theme.fg("dim", sections.summary));
+		if (sections.status.length) lines.push(...sections.status.map((line) => theme.fg(state.error || state.stale ? "warning" : "dim", line)), "");
+		if (sections.quota.length) lines.push(heading("订阅额度"), ...sections.quota.map(paint), "");
+		lines.push(heading("重置卡", sections.resetSummary), ...sections.resets.map(paint));
+		if (!button.enabled && !sections.resets.some((line) => line.trim() === button.hint)) {
+			lines.push(theme.fg(button.phase === "busy" ? "dim" : "warning", button.hint));
+		}
+		const label = button.phase === "ready" ? "[ ↻ 重置额度 · u ]" : button.phase === "busy" ? "[ ↻ 重置额度 · 处理中 ]" : "[ ↻ 重置额度 · 不可用 ]";
+		const shortLabel = button.enabled ? "[u 重置额度]" : button.phase === "busy" ? "[重置中]" : "[重置不可用]";
+		const buttonText = theme.style(truncateToWidth(contentWidth < 24 ? shortLabel : label, contentWidth), {
+			fg: button.enabled ? "accent" : button.phase === "busy" ? "warning" : "dim", bg: "selectedBg", bold: true,
+		});
+		lines.push("", " ".repeat(Math.max(0, Math.floor((contentWidth - visibleWidth(buttonText)) / 2))) + buttonText, "");
+		const fast = this.fast.summary(this.ctx.model, usesCodexSubscription(this.ctx));
+		lines.push(heading("Fast"), theme.fg(fast.warning ? "warning" : "text", `${fast.switchLabel} · ${fast.costLabel}`),
+			theme.fg(fast.warning ? "warning" : "dim", fast.responseLabel) + theme.fg("dim", " · 仅本会话"));
+		const content = lines.flatMap((line) => wrapTextWithAnsi(line, contentWidth));
+		const bodyHeight = height - (framed ? 6 : 1);
 		this.maxOffset = Math.max(0, content.length - bodyHeight);
 		this.offset = Math.min(this.offset, this.maxOffset);
+		const body = content.slice(this.offset, this.offset + bodyHeight);
+		if (!framed) return [...body, updated].map((line) => truncateToWidth(line, width));
+		const inner = width - 2;
 		const row = (text: string) => {
 			const value = truncateToWidth(` ${text}`, inner);
 			return theme.fg("border", "│") + value + " ".repeat(Math.max(0, inner - visibleWidth(value))) + theme.fg("border", "│");
 		};
 		return [
-			theme.fg("border", `╭${"─".repeat(inner)}╮`),
-			row(theme.fg("accent", "🍧 Codex 额度")),
-			theme.fg("border", `├${"─".repeat(inner)}┤`),
-			...content.slice(this.offset, this.offset + bodyHeight).map((line) => row(line)),
-			theme.fg(button.enabled ? "accent" : "border", `├${"─".repeat(inner)}┤`),
-			row(" ".repeat(Math.max(0, Math.floor((contentWidth - visibleWidth(buttonText)) / 2))) + buttonText),
-			...(!button.enabled ? [row(theme.fg("warning", truncateToWidth(button.hint, contentWidth)))] : []),
+			theme.fg("border", `╭${"─".repeat(inner)}╮`), row(header),
+			theme.fg("border", `├${"─".repeat(inner)}┤`), ...body.map(row),
+			theme.fg("border", `├${"─".repeat(inner)}┤`), row(updated),
 			theme.fg("border", `╰${"─".repeat(inner)}╯`),
-			theme.fg("dim", ` Enter/Esc 关闭${this.maxOffset ? ` · ↑↓ 滚动 ${this.offset + 1}-${Math.min(content.length, this.offset + bodyHeight)}/${content.length}` : ""}`),
 		].map((line) => truncateToWidth(line, width));
 	}
 

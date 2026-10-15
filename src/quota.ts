@@ -788,50 +788,79 @@ export function quotaBar(remaining: number, width = 20): string {
 	return "█".repeat(filled) + "░".repeat(columns - filled);
 }
 
-export function detailLines(state: QuotaState, now: number, barWidth = 20, formatQuota?: (line: string, window: QuotaWindow) => string): string[] {
-	if (state.phase === "offline") return ["离线模式：未解析认证，未发起额度请求。", "取消 PI_OFFLINE / --offline 后重新启动 pi。"];
-	if (state.phase === "not_logged_in") return ["尚未登录 openai-codex。", "请在 pi 中执行 /login openai-codex。"];
-	const lines: string[] = [];
-	if (state.phase === "loading") lines.push("正在刷新…");
-	if (state.error) lines.push(errorDescription(state.error));
-	if (state.stale) lines.push("以下为过期缓存，不代表当前剩余额度。");
-	if (state.resetUse) lines.push(state.resetUse.message);
+export interface QuotaDetailSections {
+	summary: string | null;
+	status: string[];
+	quota: string[];
+	resetSummary: string;
+	resets: string[];
+	updated: string;
+}
+
+/** Presentation only. Keep section boundaries independent of translated labels. */
+export function detailSections(state: QuotaState, now: number, barWidth = 20, formatQuota?: (line: string, window: QuotaWindow) => string): QuotaDetailSections {
+	const sections: QuotaDetailSections = {
+		summary: null, status: [], quota: [], resetSummary: "可用 未知", resets: [],
+		updated: `更新于 ${state.lastSuccessAt === null ? "未知" : localTime(state.lastSuccessAt).slice(-5)} · 本机时区`,
+	};
+	if (state.phase === "offline") {
+		sections.status.push("离线模式：未解析认证，未发起额度请求。", "取消 PI_OFFLINE / --offline 后重新启动 pi。");
+		return sections;
+	}
+	if (state.phase === "not_logged_in") {
+		sections.status.push("尚未登录 openai-codex。", "请在 pi 中执行 /login openai-codex。");
+		return sections;
+	}
+	if (state.phase === "loading") sections.status.push("正在刷新…");
+	if (state.error) sections.status.push(errorDescription(state.error));
+	if (state.stale) sections.status.push("以下为过期缓存，不代表当前剩余额度。");
+	if (state.retryAt !== null && state.retryAt > now) sections.status.push(`${state.phase === "rate_limited" ? "限流冷却" : "自动重试"}：${resetRemaining(state.retryAt, now)}后`);
 	const snapshot = state.snapshot;
 	if (snapshot) {
-		lines.push(`${snapshot.plan?.toUpperCase() ?? "未知套餐"}  ·  ${snapshot.allowed === false || snapshot.limitReached === true ? "受限" : snapshot.allowed === true ? "可用" : "状态未知"}`);
-		lines.push("", "▸ 订阅额度");
-		if (!snapshot.windows.length) lines.push("服务端未提供主额度窗口（不等于 0% 或无限额度）。");
+		sections.summary = `${snapshot.plan?.toUpperCase() ?? "未知套餐"}  ·  ${snapshot.allowed === false || snapshot.limitReached === true ? "受限" : snapshot.allowed === true ? "可用" : "状态未知"}`;
+		if (!snapshot.windows.length) sections.quota.push("服务端未提供主额度窗口（不等于 0% 或无限额度）。");
 		for (const window of snapshot.windows) {
 			const line = `${windowLabel(window)}  ${quotaBar(window.remainingPercent, barWidth)}  剩${percentage(window.remainingPercent)}% · 已用${percentage(window.usedPercent)}%`;
-			lines.push(formatQuota ? formatQuota(line, window) : line);
+			sections.quota.push(formatQuota ? formatQuota(line, window) : line);
 			const countdown = resetRemaining(window.resetAt, now);
-			lines.push(`  ↻ ${countdown}${window.resetAt !== null && window.resetAt > now ? " 后重置" : ""} · ${localTime(window.resetAt)}`);
+			sections.quota.push(`  ↻ ${countdown}${window.resetAt !== null && window.resetAt > now ? " 后重置" : ""} · ${localTime(window.resetAt)}`);
 		}
-		lines.push("");
-		const resets = availableResets(state);
-		lines.push(`▸ 重置卡  ·  可用 ${resets.count === null ? "未知" : `${resets.count} 张`}${resets.stale ? " [过期缓存]" : ""}`);
-		const reset = state.resetCredits;
-		if (reset?.error) {
-			const message = reset.error.kind === "rate_limit" ? "查询限流" : reset.error.kind === "data" ? "响应格式异常" : reset.error.kind === "timeout" ? "查询超时" : "查询失败";
-			lines.push(`  ${message}${reset.error.httpStatus ? `（HTTP ${reset.error.httpStatus}）` : ""}；${reset.snapshot ? "明细为过期缓存" : "明细暂不可用"}`);
-		}
-		const cards = reset?.snapshot?.credits;
-		if (cards) {
-			if (!cards.length) lines.push("  暂无卡片记录");
-			const labels = { available: "可用", used: "已使用", expired: "已过期", pending: "使用中", unknown: "状态未知" };
-			cards.forEach((card, index) => {
-				lines.push(`  #${index + 1} ${card.fullReset ? "完全重置（7d + 5h）" : "重置卡"} · ${labels[card.status]}`);
-				if (card.status === "used") lines.push(`     使用：${localTime(card.redeemedAt)}`);
-				else {
-					const expires = card.expiresAt === null ? "有效期未知" : `${localTime(card.expiresAt)}${card.status === "available" ? ` · ${card.expiresAt <= now ? "已到期，待刷新" : `${resetRemaining(card.expiresAt, now)}后到期`}` : ""}`;
-					lines.push(`     到期：${expires}`);
-				}
-			});
-			lines.push("  仅显示接口返回记录，不推断完整历史。");
-		} else lines.push("  未提供使用记录 / 有效期明细");
-		if (reset?.retryAt != null && reset.retryAt > now) lines.push(`  重置卡重试：${resetRemaining(reset.retryAt, now)}后`);
-		lines.push("", `更新：${localTime(state.lastSuccessAt)} · 本机时区`);
+	} else if (!sections.status.length) sections.status.push("暂无额度数据。");
+	const resets = availableResets(state);
+	sections.resetSummary = `可用 ${resets.count === null ? "未知" : `${resets.count} 张`}${resets.stale ? " [过期缓存]" : ""}`;
+	const lines = sections.resets;
+	if (state.resetUse) lines.push(state.resetUse.message);
+	const reset = state.resetCredits;
+	if (reset?.error) {
+		const message = reset.error.kind === "rate_limit" ? "查询限流" : reset.error.kind === "data" ? "响应格式异常" : reset.error.kind === "timeout" ? "查询超时" : "查询失败";
+		lines.push(`  ${message}${reset.error.httpStatus ? `（HTTP ${reset.error.httpStatus}）` : ""}；${reset.snapshot ? "明细为过期缓存" : "明细暂不可用"}`);
 	}
-	if (state.retryAt !== null && state.retryAt > now) lines.push(`${state.phase === "rate_limited" ? "限流冷却" : "自动重试"}：${resetRemaining(state.retryAt, now)}后`);
-	return lines.length ? lines : ["暂无额度数据。"];
+	const cards = reset?.snapshot?.credits;
+	if (cards) {
+		if (!cards.length) lines.push("  暂无卡片记录");
+		const labels = { available: "可用", used: "已使用", expired: "已过期", pending: "使用中", unknown: "状态未知" };
+		cards.forEach((card, index) => {
+			lines.push(`  #${index + 1} ${card.fullReset ? "完全重置（7d + 5h）" : "重置卡"} · ${labels[card.status]}`);
+			if (card.status === "used") lines.push(`     使用：${localTime(card.redeemedAt)}`);
+			else {
+				const expires = card.expiresAt === null ? "有效期未知" : `${localTime(card.expiresAt)}${card.status === "available" ? ` · ${card.expiresAt <= now ? "已到期，待刷新" : `${resetRemaining(card.expiresAt, now)}后到期`}` : ""}`;
+				lines.push(`     到期：${expires}`);
+			}
+		});
+		lines.push("  仅显示接口返回记录，不推断完整历史。");
+	} else lines.push("  未提供使用记录 / 有效期明细");
+	if (reset?.retryAt != null && reset.retryAt > now) lines.push(`  重置卡重试：${resetRemaining(reset.retryAt, now)}后`);
+	return sections;
+}
+
+/** Flat details remain available to non-TUI consumers. */
+export function detailLines(state: QuotaState, now: number, barWidth = 20, formatQuota?: (line: string, window: QuotaWindow) => string): string[] {
+	const sections = detailSections(state, now, barWidth, formatQuota);
+	if (state.phase === "offline" || state.phase === "not_logged_in") return sections.status;
+	return [
+		...sections.status,
+		...(sections.summary === null ? [] : [sections.summary, "", "▸ 订阅额度", ...sections.quota]),
+		"", `▸ 重置卡  ·  ${sections.resetSummary}`, ...sections.resets,
+		...(sections.summary === null ? [] : ["", `更新：${localTime(state.lastSuccessAt)} · 本机时区`]),
+	];
 }

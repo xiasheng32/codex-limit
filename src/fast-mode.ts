@@ -12,6 +12,13 @@ export type FastCapability = { kind: "supported" | "unsupported" | "unknown"; re
 
 export type FastPhase = "idle" | "requested" | "fast" | "standard" | "unknown";
 
+export interface FastSummary {
+	switchLabel: string;
+	costLabel: string;
+	responseLabel: string;
+	warning: boolean;
+}
+
 function fastRecord(value: unknown): Record<string, unknown> | undefined {
 	return value !== null && typeof value === "object" && !Array.isArray(value)
 		? value as Record<string, unknown> : undefined;
@@ -105,6 +112,22 @@ export class FastModeController {
 		if (!this.enabled) return "";
 		return this.capability.kind === "supported" ? " · Fast"
 			: this.capability.kind === "unsupported" ? " · Fast不可用" : " · Fast能力未知";
+	}
+
+	/** Compact presentation; a preference never claims a confirmed server tier. */
+	summary(model: FastModel | undefined, oauth: boolean): FastSummary {
+		const applicable = isCodexSubscription(model, oauth);
+		const supported = this.capability.kind === "supported";
+		const unavailable = applicable && this.enabled && !supported;
+		const switchLabel = `${this.enabled ? "已开启" : "已关闭"}${unavailable
+			? this.capability.kind === "unsupported" ? "·不可用" : "·能力未知" : ""}`;
+		const responseLabel = !applicable ? "当前模型不适用" : this.phase === "fast" ? "服务端 Fast"
+			: this.phase === "standard" ? "服务端标准" : this.reported === "unattributed" ? "响应无法确认"
+				: this.reported === "missing" ? "档位未返回" : this.phase === "requested" ? "响应待确认" : "等待响应";
+		return {
+			switchLabel, costLabel: !applicable ? "—" : this.enabled && supported ? "×2.5" : "标准", responseLabel,
+			warning: !applicable || unavailable || this.phase === "unknown" || (this.enabled && this.phase === "standard"),
+		};
 	}
 
 	details(model: FastModel | undefined, oauth: boolean): string[] {

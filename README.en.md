@@ -12,7 +12,7 @@
 
 - The footer shows only each window's remaining percentage and reset countdown in parentheses, without the plan name or outer parentheses. `(↻3h20m)` means about 3 hours 20 minutes until the server-provided reset time; missing times show `↻未知` (unknown) and elapsed times show `↻待刷新` (awaiting refresh). Quota is never restored to 100% locally.
 - The footer keeps the default status colors, with existing colors and warning thresholds for low quota, stale data, elapsed resets, restrictions, and refreshes. Countdowns reuse the 60-second status updates and event refreshes, with no extra requests or timers.
-- The centered detail panel contains a plan summary, remaining-quota progress bars, reset countdowns, reset-credit details, and an update timestamp. Each window is judged independently: at ≤20% remaining (including 20% and 0%) its bar turns light red. Plan and credit data come from the server; missing values are marked unknown, and billing renewal dates are never inferred.
+- The centered detail panel includes the plan in its title, with quota → reset credits → Fast in the body; full quota bars, reset countdowns, and credit records are preserved. Each window is judged independently: at ≤20% remaining (including 20% and 0%) its bar turns light red. Plan and credit data come from the server; missing values are marked unknown, and billing renewal dates are never inferred.
 - Reset credits correspond to the Codex usage page's usage-limit reset feature, not a paid Credits balance. They can be redeemed manually with `u` in the detail panel; the extension never redeems them automatically.
 - Session-local Fast mode: `/fast on` / `/fast off` affect only the current session and set `service_tier` for official subscription model requests based on the official model capability catalog.
 - The server determines window counts and lengths; accounts are not guaranteed to have both a 5-hour and a 7-day window. These values are Codex subscription quota, not an OpenAI API account balance or the current session's token usage.
@@ -70,10 +70,12 @@ Starting with v0.4.1 the extension is named `pi-codex` instead of `codex-limit`.
 | `/fast on` | Enables ordinary Fast after catalog validation; requires an active official Codex subscription OAuth model |
 | `/fast off` | Disables Fast for this session |
 
-- `u` starts the reset-credit flow; `Enter`, `Esc`, or `q` closes the details. Content wraps in narrow or short terminals; scroll with `↑` / `↓`, jump with `Home` / `End`. Dates use the local time zone.
+- `u` starts the reset-credit flow at any scroll position; `Enter`, `Esc`, or `q` closes the details. Content wraps in narrow or short terminals; scroll with `↑` / `↓`, jump with `Home` / `End`. Dates use the local time zone.
 - Reset-credit details show server-provided available counts, types, expiration dates, and records' used/expired status and usage times. **No complete history is inferred, missing values are never treated as zero, and usage is never derived from cumulative grants.** Unknown statuses, expirations, or missing records are explicitly marked.
 
 ### Session-local Fast mode
+
+Only two lines appear under the panel's Fast heading: when enabled and supported, the first is `已开启 · ×2.5` (enabled · ×2.5), with a second line such as `响应待确认 · 仅本会话` (response pending confirmation · this session only); when disabled, the first line is `已关闭 · 标准` (disabled · standard). Limited capability uses short labels. The second line independently reflects observed server results and retains the session-only scope; it is not inferred from the switch. Model, routing, and long explanations are no longer permanently displayed in the panel.
 
 - The only switches are `/fast on` and `/fast off`; bare `/fast` or invalid arguments show usage without changing the choice. New sessions default to off. The choice is stored as a session entry bound to the session ID and restored on resume or `/reload` (no global config, no model-context message); new and forked sessions do not inherit it. A failed save keeps the previous state; switching models retains the choice and clears old response observations.
 - Capability is never guessed from model names: the extension queries the official catalog at `GET /backend-api/codex/models?client_version=<Pi version>` and reports supported, unsupported, or unknown. Results are cached in memory for 5 minutes, failed queries back off for 30 seconds, account changes isolate old results, and offline mode never queries. Missing catalog data or failed queries report unknown capability.
@@ -84,7 +86,7 @@ Starting with v0.4.1 the extension is named `pi-codex` instead of `codex-limit`.
 
 ### Manually redeem a reset credit
 
-**The only entry point is the `[ ↻ 重置额度 · u ]` button at the bottom of the `/pi-codex` detail panel, activated with `u`.** There is no redemption subcommand or model-callable tool. The button has its own separated, bold, highlighted area that does not scroll with the details and shows available, unavailable, or processing status; when unavailable, pressing `u` only explains the reason.
+**The only entry point is the `[ ↻ 重置额度 · u ]` button after the reset-credit details in the `/pi-codex` panel, activated with `u`.** The button scrolls with the body, but `u` works at any scroll position. There is no redemption subcommand or model-callable tool; credit selection and the second confirmation are unchanged. Persistent redemption guidance and equivalent prompts are removed from the panel; necessary unavailable, busy, and result messages appear only in the reset-credit section. When unavailable, pressing `u` only explains the reason.
 
 1. The extension queries quota and credits again before you select a credit. Only known full-reset credits with valid unique IDs, an available state, and no elapsed expiry may be used; missing expiration is shown as unknown and malformed expiration prevents redemption. Failed queries, invalid login, or cooldown prevent using stale cached data.
 2. Review the selected credit, quota, and the irreversible-action notice. Confirmation defaults to **Cancel**; only an explicit confirmation sends a redemption request. Esc, default Enter, or closing never redeems.
@@ -94,6 +96,8 @@ Starting with v0.4.1 the extension is named `pi-codex` instead of `codex-limit`.
 - RPC mode queries only on manual command invocation with text notifications and no redemption entry point; print/JSON modes without UI enable no HUD, queries, or redemption.
 
 ### Refresh policy and status
+
+- The panel's fixed bottom bar reads `更新于 HH:mm · 本机时区` (updated at HH:mm · local time zone), using the last successful refresh timestamp, `lastSuccessAt`, formatted in the machine's local time zone. Without a value it reads `更新于 未知 · 本机时区` (updated at unknown · local time zone); a failed refresh keeps the previous timestamp.
 
 - With a Codex subscription model active, interactive startup queries without blocking and attempts refresh every 60 seconds and on `agent_settled`, at least 30 seconds apart. Switching models stops automatic queries and hides the status; manual `/pi-codex` still shows details.
 - Only one refresh runs at a time, resolving authentication through pi again instead of permanently caching tokens. Selection, confirmation, and redemption run as a single operation, pausing other refreshes throughout.
@@ -144,7 +148,7 @@ pi --offline -ne -e . --help
 - Tests cover quota parsing, the full redemption flow (confirm/cancel, a single POST, the four official return codes, unresolved-operation locks), Fast routing and server tiers, catalog caching and backoff, session restore and model switching, throttling, single-flight, backoff, rate limits, and shutdown cleanup, plus the sync script in temporary directories. They use only synthetic JWTs, fake authentication, fake HTTP responses, fake selection UI, and controlled time, and **never redeem real credits**.
 - Entry integration tests drive real provider serialization over simulated transports through full-pipeline Pi SDK checks (`createAgentSession` + `ExtensionRunner`) to verify slash commands and request tiers. `tsconfig.json` enables strict checks; native Node execution only strips types and does not replace `npm run typecheck`.
 - The help command queries no real quota and alone cannot prove extension loading; to check real data, run `pi -ne -e .` and compare `/pi-codex` with the official usage page.
-- Local packaging: `npm pack --offline --ignore-scripts --pack-destination ..` creates `pi-codex-0.4.1.tgz` in the parent directory without installing the extension or publishing to npm. Upload this project's contents with `package.json` at the repository root; never upload the parent directory, `.tgz` files, credentials, or local configuration. The manifest uses an explicit file allowlist without `node_modules/`.
+- Local packaging: `npm pack --offline --ignore-scripts --pack-destination ..` creates `pi-codex-0.4.2.tgz` in the parent directory without installing the extension or publishing to npm. Upload this project's contents with `package.json` at the repository root; never upload the parent directory, `.tgz` files, credentials, or local configuration. The manifest uses an explicit file allowlist without `node_modules/`.
 
 ## Project structure
 
@@ -175,7 +179,7 @@ pi loads only the manifest's entry point; `src/` is included in the distributed 
 
 ## Version history
 
-Current version **v0.4.1**. See [CHANGELOG.md](CHANGELOG.en.md) for the full history.
+Current version **v0.4.2**. See [CHANGELOG.md](CHANGELOG.en.md) for the full history.
 
 ## License
 

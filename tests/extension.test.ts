@@ -3,7 +3,7 @@ import { afterEach, beforeEach, mock, test } from "node:test";
 import type { TestContext } from "node:test";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { rgbColor, visibleWidth } from "@earendil-works/pi-tui";
 import piCodex, { QuotaPanel } from "../extensions/index.ts";
 import { FAST_ENTRY, FastModeController } from "../src/fast-mode.ts";
 import { QuotaController } from "../src/quota.ts";
@@ -385,9 +385,9 @@ test("the supported Fast footer remains enabled while the panel reports a standa
 	assert.match(h.status()!, / · Fast$/);
 	await h.command("pi-codex");
 	const detail = h.panels.at(-1)!.render(68).join("\n");
-	assert.match(detail, /模型能力：支持 Fast/);
-	assert.match(detail, /请求档位：priority/);
-	assert.match(detail, /最近服务端档位：.*default/);
+	assert.match(detail, /已开启 · ×2\.5/);
+	assert.match(detail, /服务端标准 · 仅本会话/);
+	assert.doesNotMatch(detail, /模型能力|请求档位|最近服务端档位/);
 	assert.ok(!detail.includes("Fast 未生效"));
 });
 
@@ -510,9 +510,9 @@ test("the detail panel is read-only for Fast, with only u retaining the reset ac
 	await h.command("pi-codex");
 	const output = h.panels[0]!.render(68).join("\n");
 	assert.match(output, /🍧 Codex 额度/);
-	assert.match(output, /Fast 开关：开启/);
-	assert.match(output, /使用 \/fast on 或 \/fast off/);
-	assert.ok(!output.includes("f 切换"));
+	assert.match(output, /已开启 · ×2\.5/);
+	assert.match(output, /等待响应 · 仅本会话/);
+	assert.doesNotMatch(output, /\/fast on|不会自动消耗|不会自动消费|f 切换/);
 	const controller = new QuotaController({ offline: true, resolveAuth: async () => { throw new Error("Unexpected credential lookup"); } });
 	const fast = new FastModeController();
 	fast.setCapability({ kind: "supported" });
@@ -534,20 +534,31 @@ test("the detail panel is read-only for Fast, with only u retaining the reset ac
 	controller.dispose();
 });
 
-test("panel scrolling and compact layouts remain within terminal size and show Fast", () => {
+test("panel scrolling and compact layouts fit all terminal sizes with a fixed update footer", () => {
 	const h = harness();
 	const fast = new FastModeController();
 	fast.setCapability({ kind: "supported" });
 	fast.setEnabled(true);
 	const controller = new QuotaController({ offline: true, resolveAuth: async () => { throw new Error("Unexpected credential lookup"); } });
 	const panel = new QuotaPanel(h.tui, h.ctx, controller, () => {}, fast);
-	for (const rows of [4, 8, 10, 16, 32]) {
+	for (const rows of [0, 1, 4, 8, 10, 16, 32]) {
 		h.terminal.rows = rows;
 		for (const width of [0, 1, 5, 12, 24, 40, 68, 90]) {
+			panel.render(width);
+			panel.handleInput("\x1b[H");
 			const lines = panel.render(width);
 			assert.ok(lines.length <= rows, `height overflow at ${width}x${rows}`);
 			for (const line of lines) assert.ok(visibleWidth(line) <= Math.min(width, 68), `width overflow at ${width}x${rows}: ${line}`);
-			if (width >= 24) assert.match(lines.join("\n"), /Fast/);
+			if (!width || !rows) assert.deepEqual(lines, []);
+			if (width >= 40 && rows > 0) {
+				const footer = lines.find((line) => line.includes("更新于"));
+				assert.ok(footer?.includes("更新于 未知 · 本机时区"));
+				assert.equal(lines.filter((line) => line.includes("更新于")).length, 1);
+				panel.handleInput("\x1b[F");
+				const end = panel.render(width);
+				assert.equal(end.find((line) => line.includes("更新于")), footer);
+				if (rows >= 4) assert.match(end.join("\n"), /仅本会话/);
+			}
 		}
 	}
 	h.terminal.rows = 16;
@@ -560,26 +571,191 @@ test("panel scrolling and compact layouts remain within terminal size and show F
 	controller.dispose();
 });
 
-test("short terminals retain a readable Fast switch and server-tier summary", () => {
+test("short terminals scroll from reset details to the two-line Fast summary", () => {
 	const h = harness();
 	h.terminal.rows = 8;
 	const fast = new FastModeController();
 	const controller = new QuotaController({ offline: true, resolveAuth: async () => { throw new Error("Unexpected credential lookup"); } });
 	const panel = new QuotaPanel(h.tui, h.ctx, controller, () => {}, fast);
-	assert.match(panel.render(40).join("\n"), /Fast 开关：关闭/);
+	panel.render(40);
+	panel.handleInput("\x1b[F");
+	assert.match(panel.render(40).join("\n"), /已关闭 · 标准/);
 	fast.setCapability({ kind: "supported" });
 	fast.setEnabled(true);
 	fast.transform(payload(), codex, true);
 	fast.observe(streamEvent("fast"));
 	let output = panel.render(40).join("\n");
-	assert.match(output, /Fast 开关：开启/);
-	assert.match(output, /模型能力：支持 Fast/);
-	assert.match(output, /请求档位：priority/);
-	for (let i = 0; i < 5; i++) { panel.handleInput("\x1b[B"); output += "\n" + panel.render(40).join("\n"); }
-	assert.match(output, /最近服务端档位：Fast/);
-	assert.ok(!output.includes("f 切换"));
-	panel.handleInput("\x1b[B");
-	assert.ok(h.renders >= 1);
+	assert.match(output, /已开启 · ×2\.5/);
+	assert.match(output, /服务端 Fast · 仅本会话/);
+	assert.doesNotMatch(output, /模型能力|请求档位|\/fast on|f 切换/);
+	panel.handleInput("\x1b[H");
+	output = panel.render(40).join("\n");
+	assert.match(output, /离线模式/);
+	assert.doesNotMatch(output, /服务端 Fast/);
+	controller.dispose();
+});
+
+function panelState(now: number, count = 3): QuotaState {
+	return {
+		phase: "ready", lastAttemptAt: now, lastSuccessAt: now, stale: false, retryAt: null, error: null,
+		snapshot: { plan: "plus", allowed: true, limitReached: false, resetAvailableCount: count, receivedAt: now,
+			windows: [
+				{ key: "primary_window", periodSeconds: 18000, usedPercent: 25, remainingPercent: 75, resetAt: now + 3600000 },
+				{ key: "secondary_window", periodSeconds: 604800, usedPercent: 4, remainingPercent: 96, resetAt: now + 86400000 },
+			] },
+		resetCredits: { stale: false, error: null, retryAt: null,
+			snapshot: { availableCount: count, totalEarnedCount: count, receivedAt: now,
+				credits: Array.from({ length: count }, () => ({ status: "available", fullReset: true,
+					grantedAt: null, expiresAt: now + 86400000, redeemedAt: null })) } },
+	};
+}
+
+test("dashboard orders quota, reset cards with their button, Fast, and a time-only footer", (t: TestContext) => {
+	const now = Date.UTC(2026, 9, 15, 11, 6);
+	t.mock.method(Date, "now", () => now);
+	const h = harness();
+	h.terminal.rows = 60;
+	const state = panelState(now);
+	const controller = new QuotaController({ offline: true, resolveAuth: async () => { throw new Error("Unexpected credentials"); } });
+	t.mock.method(controller, "getState", () => state);
+	t.mock.method(controller, "getResetButton", () => ({ enabled: true, phase: "ready" as const, hint: "可选 3 张 · 选卡后确认，不会自动消费" }));
+	const fast = new FastModeController();
+	fast.setCapability({ kind: "supported" });
+	fast.setEnabled(true);
+	fast.transform(payload(), codex, true);
+	const panel = new QuotaPanel(h.tui, h.ctx, controller, () => {}, fast);
+	const lines = panel.render(68);
+	const text = lines.join("\n");
+	const positions = ["订阅额度", "重置卡", "#1", "#3", "[ ↻ 重置额度 · u ]", "── Fast", "已开启 · ×2.5", "响应待确认 · 仅本会话", "更新于"].map((part) => text.indexOf(part));
+	assert.ok(positions.every((position, index) => position >= 0 && (!index || position > positions[index - 1]!)), text);
+	assert.match(lines[1]!, /🍧 Codex 额度.*PLUS.*可用/);
+	assert.match(text, /剩75% · 已用25%/);
+	assert.match(text, /到期：2026-10-/);
+	assert.equal(lines.filter((line) => line.includes("重置额度")).length, 1);
+	assert.equal(lines.filter((line) => line.includes("更新于")).length, 1);
+	assert.match(lines.at(-2)!, /更新于 \d{2}:\d{2} · 本机时区/);
+	assert.doesNotMatch(text, /更新：|选卡后确认|不会自动消费|按 u 选卡|\/fast on|当前模型：|请求档位：|Enter\/Esc/);
+	const fastStart = lines.findIndex((line) => line.includes("── Fast"));
+	assert.match(lines[fastStart + 1]!, /已开启 · ×2\.5/);
+	assert.match(lines[fastStart + 2]!, /响应待确认 · 仅本会话/);
+	controller.dispose();
+});
+
+test("reset results and disabled or busy hints stay inside the card section without duplication", (t: TestContext) => {
+	const h = harness();
+	h.terminal.rows = 64;
+	const state = panelState(Date.now());
+	state.resetUse = { message: "确认重置成功；已重新查询。", warning: false };
+	const controller = new QuotaController({ offline: true, resolveAuth: async () => { throw new Error("Unexpected credentials"); } });
+	t.mock.method(controller, "getState", () => state);
+	const panel = new QuotaPanel(h.tui, h.ctx, controller, () => {}, new FastModeController());
+	for (const phase of ["disabled", "busy"] as const) {
+		const hint = phase === "busy" ? "正在处理，请勿重复操作" : "数据不可用，请先刷新明细";
+		t.mock.method(controller, "getResetButton", () => ({ enabled: false, phase, hint }));
+		const text = panel.render(68).join("\n");
+		const cardStart = text.indexOf("重置卡");
+		const fastStart = text.indexOf("── Fast");
+		for (const message of [state.resetUse.message, hint, "重置额度"]) {
+			assert.ok(text.indexOf(message) > cardStart && text.indexOf(message) < fastStart, message);
+			assert.equal(text.split(message).length - 1, 1, message);
+		}
+	}
+	state.resetUse = { message: "数据不可用，请先刷新明细", warning: true };
+	t.mock.method(controller, "getResetButton", () => ({ enabled: false, phase: "disabled" as const, hint: state.resetUse!.message }));
+	assert.equal(panel.render(68).join("\n").split(state.resetUse.message).length - 1, 1);
+	controller.dispose();
+});
+
+test("all cards remain scrollable while the update footer is fixed and u works off-screen", (t: TestContext) => {
+	const h = harness();
+	h.terminal.rows = 16;
+	const state = panelState(Date.now(), 30);
+	const controller = new QuotaController({ offline: true, resolveAuth: async () => { throw new Error("Unexpected credentials"); } });
+	t.mock.method(controller, "getState", () => state);
+	t.mock.method(controller, "getResetButton", () => ({ enabled: true, phase: "ready" as const, hint: "synthetic ready" }));
+	const actions: ("use" | undefined)[] = [];
+	const panel = new QuotaPanel(h.tui, h.ctx, controller, (action) => actions.push(action), new FastModeController());
+	let output = "";
+	const footer = panel.render(68).at(-2);
+	for (let i = 0; i < state.resetCredits!.snapshot!.credits!.length * 3 + 30; i++) {
+		const lines = panel.render(68);
+		assert.equal(lines.at(-2), footer);
+		assert.ok(lines.length <= h.terminal.rows);
+		output += "\n" + lines.join("\n");
+		panel.handleInput("\x1b[B");
+	}
+	for (let i = 1; i <= 30; i++) assert.ok(output.includes(`#${i} `), `missing card ${i}`);
+	panel.handleInput("\x1b[F");
+	assert.match(panel.render(68).join("\n"), /仅本会话/);
+	panel.handleInput("\x1b[H");
+	assert.doesNotMatch(panel.render(68).join("\n"), /重置额度/);
+	panel.handleInput("u");
+	panel.handleInput("u");
+	assert.deepEqual(actions, ["use"]);
+	assert.equal(h.authCalls, 0);
+	assert.equal(h.selected, 0);
+	controller.dispose();
+});
+
+test("low-quota bar colors are window-local and follow light or dark appearance", (t: TestContext) => {
+	const h = harness();
+	h.terminal.rows = 64;
+	const state = panelState(Date.now());
+	const controller = new QuotaController({ offline: true, resolveAuth: async () => { throw new Error("Unexpected credentials"); } });
+	t.mock.method(controller, "getState", () => state);
+	const calls: { text: string; color: unknown }[] = [];
+	t.mock.method(h.rawContext.ui.theme, "style", (text: string, options?: { fg?: unknown }) => {
+		calls.push({ text, color: options?.fg });
+		return text;
+	});
+	const panel = new QuotaPanel(h.tui, h.ctx, controller, () => {}, new FastModeController());
+	for (const appearance of ["dark", "light"]) {
+		h.rawContext.ui.theme.appearance = appearance;
+		for (const percent of [20, 0, 20.01]) {
+			state.snapshot!.windows[0]!.remainingPercent = percent;
+			calls.length = 0;
+			panel.render(68);
+			const barCalls = calls.filter((call) => /^[█░]+$/.test(call.text));
+			assert.equal(barCalls.length, percent <= 20 ? 1 : 0);
+			if (percent <= 20) assert.deepEqual(barCalls[0]!.color, appearance === "light" ? rgbColor(176, 82, 92) : rgbColor(240, 160, 160));
+		}
+	}
+	controller.dispose();
+});
+
+test("ANSI-styled ready panels stay bounded through resize and recompute theme colors", (t: TestContext) => {
+	const h = harness();
+	const state = panelState(Date.now());
+	const controller = new QuotaController({ offline: true, resolveAuth: async () => { throw new Error("Unexpected credentials"); } });
+	t.mock.method(controller, "getState", () => state);
+	t.mock.method(controller, "getResetButton", () => ({ enabled: true, phase: "ready" as const, hint: "not displayed" }));
+	t.mock.method(h.rawContext.ui.theme, "fg", (_color: string, text: string) => {
+		const code = h.rawContext.ui.theme.appearance === "light" ? 34 : 35;
+		return `\x1b[${code}m${text}\x1b[39m`;
+	});
+	t.mock.method(h.rawContext.ui.theme, "style", (text: string) => `\x1b[1;44m${text}\x1b[0m`);
+	const fast = new FastModeController();
+	fast.setEnabled(true);
+	fast.setCapability({ kind: "supported" });
+	const panel = new QuotaPanel(h.tui, h.ctx, controller, () => {}, fast);
+	for (const appearance of ["dark", "light"]) {
+		h.rawContext.ui.theme.appearance = appearance;
+		for (const rows of [1, 4, 8, 10, 16, 32]) {
+			h.terminal.rows = rows;
+			for (const width of [1, 5, 12, 24, 40, 68, 90]) {
+				panel.render(width);
+				panel.handleInput("\x1b[F");
+				const lines = panel.render(width);
+				assert.ok(lines.length <= rows);
+				assert.ok(lines.every((line) => visibleWidth(line) <= Math.min(width, 68)), `${width}x${rows}`);
+				if (width >= 40) assert.match(lines.join("\n"), appearance === "light" ? /\x1b\[34m/ : /\x1b\[35m/);
+			}
+		}
+	}
+	h.terminal.rows = 64;
+	panel.render(68);
+	panel.handleInput("\x1b[F");
+	assert.match(panel.render(68).join("\n"), /订阅额度/); // Enlarging clamps the old scroll offset back to zero.
 	controller.dispose();
 });
 

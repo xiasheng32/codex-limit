@@ -3,6 +3,15 @@
 All notable changes to this project are documented in this file.
 Versions follow [Semantic Versioning](https://semver.org/); dates are release dates.
 
+## [0.4.2] - 2026-10-15
+
+### Changed
+- Refined the detail panel: the title includes the plan, and the body follows quota → reset credits → Fast, preserving full quota details and credit records.
+- Moved the reset button after the credit details so it scrolls with the body; `u` still works at any scroll position, with credit selection and the second confirmation unchanged. Removed persistent redemption guidance and equivalent prompts; necessary unavailable, busy, and result messages stay in the reset-credit section.
+- Fast has only two lines below its heading: enabled and supported shows “已开启 · ×2.5” (enabled · ×2.5) and “响应待确认 · 仅本会话” (response pending confirmation · this session only); disabled shows “已关闭 · 标准” (disabled · standard). Limited capability uses short labels, server results remain independent of the switch, and model, routing, and long explanations are no longer permanently displayed.
+- The fixed bottom bar reads “更新于 HH:mm · 本机时区” (updated at HH:mm · local time zone), using `lastSuccessAt` in the machine's local time zone; missing values show unknown, and failed refreshes keep the previous timestamp.
+- Preserved stale-cache, refresh, and redemption safety logic; updated both READMEs, archive examples, and package and lockfile root versions to 0.4.2 while retaining the v0.4.1 rename migration notes.
+
 ## [0.4.1] - 2026-10-15
 
 ### Changed (breaking)

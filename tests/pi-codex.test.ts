@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { spawnSync } from "node:child_process";
 import {
-	API_URL, detailLines, extractAccountId, isOffline, parseQuota, parseRetryAfter,
+	API_URL, detailLines, detailSections, extractAccountId, isOffline, parseQuota, parseRetryAfter,
 	QuotaController, resetRemaining, statusLine, THROTTLE_MS, TIMEOUT_MS, windowLabel,
 	RESET_CREDITS_URL, CONSUME_RESET_URL, parseResetCredits, parseConsumeResult, quotaBar, isLowQuota,
 } from "../src/quota.ts";
@@ -189,6 +190,148 @@ function assertResetSanitized(h: ReturnType<typeof harness>, ui: RecordedUI) {
 	const text = JSON.stringify({ dialogs: ui.dialogs, notices: ui.notices });
 	for (const secret of secrets) assert.ok(!text.includes(secret), "Dialogs and notices must stay sanitized");
 }
+
+function localDateTime(timestamp: number): string {
+	const date = new Date(timestamp);
+	const pad = (value: number) => String(value).padStart(2, "0");
+	return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+test("detail sections expose stable fields and preserve full quota dates and every card record", () => {
+	const state: QuotaState = {
+		...ready(parseQuota(payload(), NOW)),
+		resetCredits: { snapshot: parseResetCredits(resetPayload(), NOW), stale: false, error: null, retryAt: null },
+	};
+	const before = structuredClone(state);
+	const sections = detailSections(state, NOW);
+	assert.deepEqual(Object.keys(sections).sort(), ["summary", "status", "quota", "resetSummary", "resets", "updated"].sort());
+	assert.equal(sections.summary, "PLUS  ·  可用");
+	assert.deepEqual(sections.status, []);
+	assert.equal(sections.resetSummary, "可用 2 张");
+	assert.equal(sections.updated, `更新于 ${localDateTime(NOW).slice(-5)} · 本机时区`);
+	assert.equal(sections.quota.length, 4);
+	for (const [index, window] of quotaSnapshot(state).windows.entries()) {
+		assert.ok(sections.quota[index * 2].includes(`剩${window.remainingPercent}% · 已用${window.usedPercent}%`));
+		assert.ok(sections.quota[index * 2 + 1].includes(localDateTime(present(window.resetAt))));
+	}
+	assert.deepEqual(sections.resets.filter((line) => /^  #/.test(line)), [
+		"  #1 完全重置（7d + 5h） · 可用", "  #2 完全重置（7d + 5h） · 可用",
+		"  #3 重置卡 · 已使用", "  #4 重置卡 · 已过期",
+	]);
+	for (const card of resetCards(state)) {
+		const timestamp = card.status === "used" ? card.redeemedAt : card.expiresAt;
+		assert.ok(sections.resets.some((line) => line.includes(localDateTime(present(timestamp)))));
+	}
+	assert.ok(sections.resets.includes("  仅显示接口返回记录，不推断完整历史。"));
+	assert.deepEqual(state, before, "section rendering must not change the cached state");
+	assert.deepEqual(detailLines(state, NOW), [
+		sections.summary, "", "▸ 订阅额度", ...sections.quota,
+		"", `▸ 重置卡  ·  ${sections.resetSummary}`, ...sections.resets,
+		"", `更新：${localDateTime(NOW)} · 本机时区`,
+	]);
+});
+
+test("detail sections keep global errors separate from reset outcomes, card errors and card retries", () => {
+	for (const error of [
+		{ kind: "rate_limit", httpStatus: 429 }, { kind: "data" }, { kind: "timeout" }, { kind: "http", httpStatus: 503 },
+	] as const) {
+		const state: QuotaState = {
+			...ready(parseQuota(payload(), NOW)), phase: "network_error", stale: true,
+			error: { kind: "network" }, retryAt: NOW + 120_000,
+			resetUse: { message: "synthetic reset result", warning: true },
+			resetCredits: { snapshot: parseResetCredits(resetPayload(), NOW), stale: true, error, retryAt: NOW + 180_000 },
+		};
+		const sections = detailSections(state, NOW);
+		assert.deepEqual(sections.status, [
+			"额度查询网络失败，请检查连接或代理", "以下为过期缓存，不代表当前剩余额度。", "自动重试：2m后",
+		]);
+		assert.equal(sections.resetSummary, "可用 2 张 [过期缓存]");
+		assert.equal(sections.resets[0], state.resetUse?.message);
+		assert.match(sections.resets[1], /明细为过期缓存/);
+		assert.equal(sections.resets.at(-1), "  重置卡重试：3m后");
+		assert.doesNotMatch(sections.resets.join("\n"), /额度查询网络失败|自动重试/);
+		assert.doesNotMatch([...sections.status, ...sections.quota].join("\n"), /synthetic reset result|重置卡重试|明细为过期缓存/);
+		assert.equal(sections.resets.filter((line) => /^  #/.test(line)).length, 4);
+	}
+});
+
+test("card-only failure remains in resets while fresh usage and its summary remain visible", () => {
+	const state: QuotaState = {
+		...ready(parseQuota(payload(), NOW)),
+		resetCredits: { snapshot: null, stale: false, error: { kind: "http", httpStatus: 502 }, retryAt: NOW + 60_000 },
+	};
+	const sections = detailSections(state, NOW);
+	assert.equal(sections.summary, "PLUS  ·  可用");
+	assert.deepEqual(sections.status, []);
+	assert.equal(sections.quota.length, 4);
+	assert.equal(sections.resetSummary, "可用 未知");
+	assert.deepEqual(sections.resets, ["  查询失败（HTTP 502）；明细暂不可用", "  未提供使用记录 / 有效期明细", "  重置卡重试：1m后"]);
+	state.resetCredits!.retryAt = NOW;
+	assert.ok(!detailSections(state, NOW).resets.some((line) => line.includes("重置卡重试")));
+});
+
+test("updated uses last successful local HH:mm, stays unknown for null, and survives refresh failure", async () => {
+	let fail = false;
+	const h = harness({ transport: async () => {
+		if (fail) throw new Error("synthetic network failure");
+		return Response.json(payload());
+	} });
+	try {
+		assert.equal(detailSections(h.controller.getState(), NOW).updated, "更新于 未知 · 本机时区");
+		h.advance(7 * 60_000);
+		const success = await h.controller.refresh();
+		const expected = `更新于 ${localDateTime(h.now).slice(-5)} · 本机时区`;
+		assert.equal(detailSections(success, h.now).updated, expected);
+		fail = true;
+		h.advance(83 * 60_000);
+		const failed = await h.controller.refresh(true);
+		assert.equal(failed.phase, "network_error");
+		assert.equal(failed.lastSuccessAt, success.lastSuccessAt);
+		assert.equal(detailSections(failed, h.now).updated, expected);
+		assert.notEqual(failed.lastAttemptAt, failed.lastSuccessAt);
+	} finally { h.controller.dispose(); }
+});
+
+test("updated follows the host timezone in isolated processes rather than UTC or a fixed offset", () => {
+	for (const TZ of ["UTC", "Asia/Kathmandu", "America/St_Johns"]) {
+		const source = `
+			import assert from 'node:assert/strict';
+			import { detailSections } from ${JSON.stringify(new URL("../src/quota.ts", import.meta.url).href)};
+			const lastSuccessAt = Date.UTC(2026, 9, 7, 23, 7);
+			const date = new Date(lastSuccessAt);
+			const time = [date.getHours(), date.getMinutes()].map(v => String(v).padStart(2, '0')).join(':');
+			const state = { phase: 'ready', snapshot: null, lastAttemptAt: lastSuccessAt + 3600000,
+				lastSuccessAt, stale: false, retryAt: null, error: null };
+			assert.equal(detailSections(state, lastSuccessAt + 7200000).updated, '更新于 ' + time + ' · 本机时区');
+		`;
+		const result = spawnSync(process.execPath, ["--input-type=module", "--eval", source], {
+			env: { ...process.env, TZ }, encoding: "utf8",
+		});
+		assert.equal(result.status, 0, `${TZ}: ${result.stderr || result.error?.message}`);
+	}
+});
+
+test("offline and logged-out sections never expose old quota, cards, errors or reset outcomes", () => {
+	for (const phase of ["offline", "not_logged_in"] as const) {
+		const state: QuotaState = {
+			...ready(parseQuota(payload(), NOW)), phase, stale: true, error: { kind: "network" }, retryAt: NOW + 60_000,
+			resetUse: { message: "synthetic old reset outcome", warning: true },
+			resetCredits: { snapshot: parseResetCredits(resetPayload(), NOW), stale: true,
+				error: { kind: "rate_limit", httpStatus: 429 }, retryAt: NOW + 120_000 },
+		};
+		const before = structuredClone(state);
+		const sections = detailSections(state, NOW);
+		assert.equal(sections.summary, null);
+		assert.deepEqual(sections.quota, []);
+		assert.equal(sections.resetSummary, "可用 未知");
+		assert.deepEqual(sections.resets, []);
+		assert.deepEqual(sections.status, phase === "offline"
+			? ["离线模式：未解析认证，未发起额度请求。", "取消 PI_OFFLINE / --offline 后重新启动 pi。"]
+			: ["尚未登录 openai-codex。", "请在 pi 中执行 /login openai-codex。"]);
+		assert.deepEqual(detailLines(state, NOW), sections.status);
+		assert.deepEqual(state, before);
+	}
+});
 
 test("reset cards parse known metadata and discard all account/credit secrets", () => {
 	const data = resetPayload();

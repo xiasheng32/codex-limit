@@ -13,6 +13,99 @@ function event(tier: unknown, options: { type?: string; id?: string; model?: str
 		data: { type: options.type ?? "response.completed", response: { id: options.id ?? "synthetic-response-A", service_tier: tier } } };
 }
 
+test("summary separates the session switch, applicable cost and idle response without changing state", () => {
+	for (const enabled of [false, true]) {
+		for (const kind of ["supported", "unknown", "unsupported"] as const) {
+			const fast = new FastModeController();
+			fast.setCapability({ kind, reason: "synthetic capability" });
+			fast.setEnabled(enabled);
+			const before = structuredClone(fast);
+			const unavailable = enabled && kind !== "supported";
+			assert.deepEqual(fast.summary(model, true), {
+				switchLabel: `${enabled ? "已开启" : "已关闭"}${unavailable ? kind === "unknown" ? "·能力未知" : "·不可用" : ""}`,
+				costLabel: enabled && kind === "supported" ? "×2.5" : "标准",
+				responseLabel: "等待响应", warning: unavailable,
+			});
+			assert.deepEqual(structuredClone(fast), before, "presentation must preserve preference and response state");
+			assert.deepEqual(fast.transform(request(), model, true), {
+				...request(), service_tier: enabled && kind === "supported" ? "priority" : "default",
+			});
+			assert.equal(fast.enabled, enabled, "unsupported/unknown capability must not discard the preference");
+		}
+	}
+});
+
+test("summary marks non-applicable models and authentication with no cost or response claim", () => {
+	for (const enabled of [false, true]) {
+		const fast = new FastModeController();
+		fast.setEnabled(enabled);
+		fast.setCapability({ kind: "supported" });
+		fast.transform(request(), model, true);
+		fast.observe(event("fast"));
+		for (const [candidate, oauth] of [[undefined, true], [{ ...model, provider: "openai" }, true],
+			[{ ...model, api: "other-api" }, true], [{ ...model, baseUrl: "https://proxy.invalid" }, true], [model, false]] as const) {
+			const before = structuredClone(fast);
+			assert.deepEqual(fast.summary(candidate, oauth), {
+				switchLabel: enabled ? "已开启" : "已关闭", costLabel: "—", responseLabel: "当前模型不适用", warning: true,
+			});
+			assert.deepEqual(structuredClone(fast), before);
+		}
+	}
+});
+
+test("summary distinguishes pending requests, confirmed Fast/default and missing server tiers", () => {
+	for (const enabled of [false, true]) {
+		for (const type of ["response.completed", "response.done"]) {
+			for (const tier of ["fast", "priority", "default", undefined, "auto"]) {
+				const fast = new FastModeController();
+				fast.setCapability({ kind: "supported" });
+				fast.setEnabled(enabled);
+				fast.transform(request(), model, true);
+				const base = { switchLabel: enabled ? "已开启" : "已关闭", costLabel: enabled ? "×2.5" : "标准" };
+				const pending = structuredClone(fast);
+				assert.deepEqual(fast.summary(model, true), { ...base, responseLabel: "响应待确认", warning: false });
+				assert.deepEqual(structuredClone(fast), pending);
+				fast.observe(event(tier, { type }));
+				const confirmedFast = tier === "fast" || tier === "priority";
+				const standard = tier === "default";
+				const settled = structuredClone(fast);
+				assert.deepEqual(fast.summary(model, true), {
+					...base, responseLabel: confirmedFast ? "服务端 Fast" : standard ? "服务端标准" : "档位未返回",
+					warning: !confirmedFast && (!standard || enabled),
+				});
+				assert.deepEqual(structuredClone(fast), settled);
+				fast.settle();
+				assert.deepEqual(structuredClone(fast), settled, "reading a summary must not leave a request pending");
+			}
+		}
+	}
+});
+
+test("summary never confirms failed, incomplete, unfinished or ambiguously overlapping responses", () => {
+	for (const scenario of ["response.failed", "response.incomplete", "settle", "overlap"]) {
+		const fast = new FastModeController();
+		fast.setCapability({ kind: "supported" });
+		fast.setEnabled(true);
+		fast.transform(request(), model, true);
+		if (scenario === "overlap") fast.transform(request(), model, true);
+		else if (scenario === "settle") fast.settle();
+		else fast.observe(event("priority", { type: scenario }));
+		const expected = { switchLabel: "已开启", costLabel: "×2.5", responseLabel: "响应无法确认", warning: true };
+		const before = structuredClone(fast);
+		assert.deepEqual(fast.summary(model, true), expected);
+		assert.deepEqual(fast.summary(model, true), expected);
+		assert.deepEqual(structuredClone(fast), before);
+		fast.observe(event("fast"));
+		assert.deepEqual(fast.summary(model, true), expected, "late/overlapping confirmation remains conservative");
+		fast.resetSession(true);
+		fast.setCapability({ kind: "supported" });
+		assert.deepEqual(fast.summary(model, true), { ...expected, responseLabel: "等待响应", warning: false });
+		fast.transform(request(), model, true);
+		fast.observe(event("fast"));
+		assert.deepEqual(fast.summary(model, true), { ...expected, responseLabel: "服务端 Fast", warning: false });
+	}
+});
+
 test("only the Codex subscription provider, responses API and OAuth qualify", () => {
 	assert.equal(isCodexSubscription(model, true), true);
 	for (const candidate of [undefined, { ...model, provider: "openai" }, { ...model, provider: "anthropic" },
