@@ -12,7 +12,7 @@
 
 - The footer shows only each window's remaining percentage and reset countdown in parentheses, without the plan name or outer parentheses. `(↻3h20m)` means about 3 hours 20 minutes until the server-provided reset time; missing times show `↻未知` (unknown) and elapsed times show `↻待刷新` (awaiting refresh). Quota is never restored to 100% locally.
 - The footer keeps the default status colors, with existing colors and warning thresholds for low quota, stale data, elapsed resets, restrictions, and refreshes. Countdowns reuse the 60-second status updates and event refreshes, with no extra requests or timers.
-- The centered detail panel includes the plan in its title, with quota → reset credits → Fast in the body; full quota bars, reset countdowns, and credit records are preserved. Each window is judged independently: at ≤20% remaining (including 20% and 0%) its bar turns light red. Plan and credit data come from the server; missing values are marked unknown, and billing renewal dates are never inferred.
+- The detail panel includes the plan in its title, with quota → reset credits → Fast in the body. Body information lines (quota bars, reset countdowns, credit records, hint lines, the two Fast lines, and the fixed bottom `更新于 HH:mm · 本机时区` bar) are horizontally centered in the panel; the title bar and frame are unchanged. The three sections drop the long separators in favor of centered, color-coded short decorative headings — `─ 订阅额度 ─` (quota, cyan), `─ 重置卡 · 可用 N 张 ─` (reset credits · N available, purple), and `─ Fast ─` (green) — each with dark/light palettes; the reset button is a three-line boxed button. Full quota bars, reset countdowns, and credit records are preserved. Each window is judged independently: at ≤20% remaining (including 20% and 0%) its bar turns light red. Plan and credit data come from the server; missing values are marked unknown, and billing renewal dates are never inferred.
 - Reset credits correspond to the Codex usage page's usage-limit reset feature, not a paid Credits balance. They can be redeemed manually with `u` in the detail panel; the extension never redeems them automatically.
 - Session-local Fast mode: `/fast on` / `/fast off` affect only the current session and set `service_tier` for official subscription model requests based on the official model capability catalog.
 - The server determines window counts and lengths; accounts are not guaranteed to have both a 5-hour and a 7-day window. These values are Codex subscription quota, not an OpenAI API account balance or the current session's token usage.
@@ -86,7 +86,15 @@ Only two lines appear under the panel's Fast heading: when enabled and supported
 
 ### Manually redeem a reset credit
 
-**The only entry point is the `[ ↻ 重置额度 · u ]` button after the reset-credit details in the `/pi-codex` panel, activated with `u`.** The button scrolls with the body, but `u` works at any scroll position. There is no redemption subcommand or model-callable tool; credit selection and the second confirmation are unchanged. Persistent redemption guidance and equivalent prompts are removed from the panel; necessary unavailable, busy, and result messages appear only in the reset-credit section. When unavailable, pressing `u` only explains the reason.
+**The only entry point is the boxed `↻ 重置额度 · u` button after the reset-credit details in the `/pi-codex` panel, activated with `u`** (a three-line box; very narrow terminals degrade to a one-line short label):
+
+```text
+┌────────────────────┐
+│   ↻ 重置额度 · u   │
+└────────────────────┘
+```
+
+The button scrolls with the body, but `u` works at any scroll position. There is no redemption subcommand or model-callable tool; credit selection and the second confirmation are unchanged. Persistent redemption guidance and equivalent prompts are removed from the panel; necessary unavailable, busy, and result messages appear only in the reset-credit section. When unavailable, pressing `u` only explains the reason.
 
 1. The extension queries quota and credits again before you select a credit. Only known full-reset credits with valid unique IDs, an available state, and no elapsed expiry may be used; missing expiration is shown as unknown and malformed expiration prevents redemption. Failed queries, invalid login, or cooldown prevent using stale cached data.
 2. Review the selected credit, quota, and the irreversible-action notice. Confirmation defaults to **Cancel**; only an explicit confirmation sends a redemption request. Esc, default Enter, or closing never redeems.
@@ -148,7 +156,7 @@ pi --offline -ne -e . --help
 - Tests cover quota parsing, the full redemption flow (confirm/cancel, a single POST, the four official return codes, unresolved-operation locks), Fast routing and server tiers, catalog caching and backoff, session restore and model switching, throttling, single-flight, backoff, rate limits, and shutdown cleanup, plus the sync script in temporary directories. They use only synthetic JWTs, fake authentication, fake HTTP responses, fake selection UI, and controlled time, and **never redeem real credits**.
 - Entry integration tests drive real provider serialization over simulated transports through full-pipeline Pi SDK checks (`createAgentSession` + `ExtensionRunner`) to verify slash commands and request tiers. `tsconfig.json` enables strict checks; native Node execution only strips types and does not replace `npm run typecheck`.
 - The help command queries no real quota and alone cannot prove extension loading; to check real data, run `pi -ne -e .` and compare `/pi-codex` with the official usage page.
-- Local packaging: `npm pack --offline --ignore-scripts --pack-destination ..` creates `pi-codex-0.4.3.tgz` in the parent directory without installing the extension or publishing to npm. Upload this project's contents with `package.json` at the repository root; never upload the parent directory, `.tgz` files, credentials, or local configuration. The manifest uses an explicit file allowlist without `node_modules/`.
+- Local packaging: `npm pack --offline --ignore-scripts --pack-destination ..` creates `pi-codex-0.4.4.tgz` in the parent directory without installing the extension or publishing to npm. Upload this project's contents with `package.json` at the repository root; never upload the parent directory, `.tgz` files, credentials, or local configuration. The manifest uses an explicit file allowlist without `node_modules/`.
 
 ## Project structure
 
@@ -182,7 +190,7 @@ pi loads only the manifest's entry point; `src/` is included in the distributed 
 
 ## Version history
 
-Current version **v0.4.3**. See [CHANGELOG.md](CHANGELOG.en.md) for the full history.
+Current version **v0.4.4**. See [CHANGELOG.md](CHANGELOG.en.md) for the full history.
 
 ## License
 

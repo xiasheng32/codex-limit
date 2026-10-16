@@ -3,6 +3,14 @@
 All notable changes to this project are documented in this file.
 Versions follow [Semantic Versioning](https://semver.org/); dates are release dates.
 
+## [0.4.4] - 2026-10-16
+
+### Changed
+- The detail panel's body information lines (quota bars, reset countdowns, credit records, hint lines, the two Fast lines, and the fixed bottom “更新于 HH:mm · 本机时区” bar) are horizontally centered in the panel; the title bar and frame are unchanged.
+- The three sections drop the long `──` separators in favor of centered, color-coded short decorative headings: `─ 订阅额度 ─` (quota, cyan), `─ 重置卡 · 可用 N 张 ─` (reset credits · N available, purple), and `─ Fast ─` (green), each with dark/light palettes.
+- The reset button is now a three-line boxed `↻ 重置额度 · u` button without background highlighting; it stays after the credit details and before Fast, scrolling with the body, with `u` the only entry point at any scroll position and a one-line short label in very narrow terminals. Ready/busy/unavailable wording and colors are unchanged.
+- Updated both READMEs' archive download name and current-version line to 0.4.4; package and lockfile root versions are now 0.4.4.
+
 ## [0.4.3] - 2026-10-16
 
 ### Fixed
