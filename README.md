@@ -21,7 +21,7 @@
 
 需要 Node.js >=22.19 和提供 `modelRegistry.getProviderAuth()`、原生 `registerProvider()`、`before_provider_request`、`provider_stream_event` 的 pi（开发类型与集成测试使用 **1.2.0**，已通过 Pi SDK 全链路测试与离线加载验证）。运行时由 pi 提供宿主包，无运行时依赖；完整测试与类型检查需安装本项目开发依赖。项目代码统一为 TypeScript，由 Node 原生运行，无编译产物或额外 TS 运行器。
 
-克隆后在包含 `package.json` 的项目根目录运行（解开 `.tgz` 后进入 `package/`）：
+克隆后在包含 `package.json` 的项目根目录运行（解开 `.tgz` 后进入 `package/`，发布包仅含安装与运行所需文件，不含 `tests/`）：
 
 ```bash
 cd pi-codex
@@ -143,9 +143,8 @@ pi --offline -ne -e .
 # 核心与同步脚本测试，无需安装额外依赖
 node --test tests/pi-codex.test.ts tests/fast-mode.test.ts tests/catalog.test.ts tests/sync-autoload.test.ts
 
-# 完整测试和类型检查：先安装开发依赖（不安装插件、不改全局 pi、不执行安装脚本）
+# 完整测试和类型检查：在克隆的仓库目录先安装开发依赖（不安装插件、不改全局 pi、不执行安装脚本）
 npm ci --ignore-scripts --no-audit --no-fund
-# 解包目录没有 package-lock.json 时改用 npm install --ignore-scripts --no-audit --no-fund
 npm test           # 原生运行 tests/*.test.ts，含使用 pi 宿主开发依赖的入口集成测试
 npm run typecheck  # 严格检查入口、核心、同步脚本与测试，不生成 JS
 npm run check      # 类型检查 + 全部离线测试
@@ -153,10 +152,11 @@ npm run check      # 类型检查 + 全部离线测试
 pi --offline -ne -e . --help
 ```
 
+- 测试仅保留在 GitHub 仓库：发布包文件白名单不含 `tests/`，解开 `.tgz` 的 `package/` 只用于安装试用；完整测试与类型检查请克隆仓库运行。
 - 测试覆盖额度解析、用卡全流程（确认/取消/单次 POST/四种官方返回码/未决锁）、Fast 路由与服务端档位、模型目录缓存与退避、会话恢复与模型切换、节流/单飞/退避/限流/关闭清理，以及临时目录中的同步脚本；只用合成 JWT、假认证、假 HTTP 响应、假选择 UI 和可控时间，**绝不消费真实卡片**。
 - 入口集成测试经 Pi SDK 全链路（`createAgentSession` + `ExtensionRunner`）驱动真实 provider 序列化验证 slash commands 与请求档位；`tsconfig.json` 开启严格检查，Node 原生运行只擦除类型，不能替代 `npm run typecheck`。
 - 帮助命令不查询真实额度，也不能单独证明扩展加载成功；如需核对真实数据，运行 `pi -ne -e .` 用 `/pi-codex` 对照官方用量页。
-- 本地打包：`npm pack --offline --ignore-scripts --pack-destination ..` 生成上层 `pi-codex-0.4.4.tgz`，不安装插件、不发布 npm。上传 GitHub 使用本项目目录内容（`package.json` 位于仓库根目录），不要上传父目录、`.tgz`、凭据或本机配置；包清单为精确文件白名单，不含 `node_modules/`。
+- 本地打包：`npm pack --offline --ignore-scripts --pack-destination ..` 生成上层 `pi-codex-0.4.5.tgz`，不安装插件、不发布 npm。上传 GitHub 使用本项目目录内容（`package.json` 位于仓库根目录），不要上传父目录、`.tgz`、凭据或本机配置；包清单为精确文件白名单，不含 `node_modules/` 与 `tests/`（测试仅保留在 GitHub 仓库）。
 
 ## 文件结构
 
@@ -190,7 +190,7 @@ Pi 通过清单只加载入口文件；`src/` 同时包含在发布文件中，�
 
 ## 版本更新
 
-当前版本 **v0.4.4**。完整更新记录见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本 **v0.4.5**。完整更新记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 许可
 

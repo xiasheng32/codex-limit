@@ -21,7 +21,7 @@
 
 Requires Node.js >=22.19 and a pi host exposing `modelRegistry.getProviderAuth()`, native `registerProvider()`, `before_provider_request`, and `provider_stream_event` (development types and integration tests use **1.2.0**, verified by full-pipeline Pi SDK tests and offline loading checks). At runtime pi supplies the host packages, with no runtime dependencies; the full test suite and type checking need this project's development dependencies. Project code is TypeScript run natively by Node, with no compiled artifacts or extra TS runner.
 
-After cloning, run from the project root containing `package.json` (or the `package/` directory after extracting a `.tgz`):
+After cloning, run from the project root containing `package.json` (or the `package/` directory after extracting a `.tgz`, which ships only the files needed for installation and runtime, without `tests/`):
 
 ```bash
 cd pi-codex
@@ -142,10 +142,9 @@ Implementation references: [Codex query and redemption client](https://github.co
 # Core and synchronization tests only: no extra dependencies needed
 node --test tests/pi-codex.test.ts tests/fast-mode.test.ts tests/catalog.test.ts tests/sync-autoload.test.ts
 
-# Full tests and type checking: install the development dependencies first
-# without installing the extension, changing global pi, or running install scripts
+# Full tests and type checking: in a cloned repository, install the development
+# dependencies first without installing the extension, changing global pi, or running install scripts
 npm ci --ignore-scripts --no-audit --no-fund
-# Without a package-lock.json, use: npm install --ignore-scripts --no-audit --no-fund
 npm test           # Runs tests/*.test.ts natively, including host-dependent entry integration tests
 npm run typecheck  # Strict checks for entry, core, script, and tests; no JS output
 npm run check      # Type checking plus all offline tests
@@ -153,10 +152,11 @@ npm run check      # Type checking plus all offline tests
 pi --offline -ne -e . --help
 ```
 
+- Tests live only in the GitHub repository: the published file allowlist excludes `tests/`, so the `package/` directory from a `.tgz` is for installation and trial only; clone the repository to run the full suite and type checking.
 - Tests cover quota parsing, the full redemption flow (confirm/cancel, a single POST, the four official return codes, unresolved-operation locks), Fast routing and server tiers, catalog caching and backoff, session restore and model switching, throttling, single-flight, backoff, rate limits, and shutdown cleanup, plus the sync script in temporary directories. They use only synthetic JWTs, fake authentication, fake HTTP responses, fake selection UI, and controlled time, and **never redeem real credits**.
 - Entry integration tests drive real provider serialization over simulated transports through full-pipeline Pi SDK checks (`createAgentSession` + `ExtensionRunner`) to verify slash commands and request tiers. `tsconfig.json` enables strict checks; native Node execution only strips types and does not replace `npm run typecheck`.
 - The help command queries no real quota and alone cannot prove extension loading; to check real data, run `pi -ne -e .` and compare `/pi-codex` with the official usage page.
-- Local packaging: `npm pack --offline --ignore-scripts --pack-destination ..` creates `pi-codex-0.4.4.tgz` in the parent directory without installing the extension or publishing to npm. Upload this project's contents with `package.json` at the repository root; never upload the parent directory, `.tgz` files, credentials, or local configuration. The manifest uses an explicit file allowlist without `node_modules/`.
+- Local packaging: `npm pack --offline --ignore-scripts --pack-destination ..` creates `pi-codex-0.4.5.tgz` in the parent directory without installing the extension or publishing to npm. Upload this project's contents with `package.json` at the repository root; never upload the parent directory, `.tgz` files, credentials, or local configuration. The manifest uses an explicit file allowlist without `node_modules/` or `tests/` (tests remain in the GitHub repository).
 
 ## Project structure
 
@@ -190,7 +190,7 @@ pi loads only the manifest's entry point; `src/` is included in the distributed 
 
 ## Version history
 
-Current version **v0.4.4**. See [CHANGELOG.md](CHANGELOG.en.md) for the full history.
+Current version **v0.4.5**. See [CHANGELOG.md](CHANGELOG.en.md) for the full history.
 
 ## License
 

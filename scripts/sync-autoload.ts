@@ -12,7 +12,7 @@ const entry = await readFile(resolve(root, "extensions/index.ts"), "utf8");
 const entryBody = entry.replace(/^import .* from "\.\.\/src\/(?:quota|fast-mode|fast-catalog|fast-provider)\.ts";\n/gm, "");
 const splitAt = entryBody.indexOf('const STATUS_KEY = "pi-codex";');
 if (splitAt < 0 || entryBody.includes('from "../src/')) throw new Error("Unexpected extension layout; refusing to deploy");
-const bundle = "// Self-contained pi autoload extension. Generated from CLIProjects/pi-codex by npm run sync-autoload.\n"
+const bundle = "// Self-contained pi autoload extension. Generated from xiasheng32/pi-codex by npm run sync-autoload.\n"
 	+ entryBody.slice(0, splitAt) + source + "\n" + entryBody.slice(splitAt);
 await mkdir(dirname(target), { recursive: true });
 await writeFile(target, bundle);
