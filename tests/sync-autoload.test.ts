@@ -16,7 +16,7 @@ async function expectedBundle(): Promise<string> {
 	const body = entry.replace(/^import .* from "\.\.\/src\/(?:quota|fast-mode|fast-catalog|fast-provider)\.ts";\n/gm, "");
 	const split = body.indexOf('const STATUS_KEY = "pi-codex";');
 	assert.ok(split >= 0);
-	return "// Self-contained pi autoload extension. Generated from CLIProjects/pi-codex by npm run sync-autoload.\n"
+	return "// Self-contained pi autoload extension. Generated from xiasheng32/pi-codex by npm run sync-autoload.\n"
 		+ body.slice(0, split) + source + "\n" + body.slice(split);
 }
 

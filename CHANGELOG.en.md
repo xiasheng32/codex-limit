@@ -3,6 +3,13 @@
 All notable changes to this project are documented in this file.
 Versions follow [Semantic Versioning](https://semver.org/); dates are release dates.
 
+## [0.4.5] - 2026-10-16
+
+### Changed
+- The published file allowlist no longer includes the 9 `tests/*.test.ts` files: all tests remain in the GitHub repository, so clone it to run the full suite and type checking; the `package/` directory from a `.tgz` is for installation and trial only. The package shrinks from 22 files to 13 (unpacked 336,667 B → 148,698 B) while keeping `extensions/index.ts`, the four `src/` modules, `scripts/sync-autoload.ts`, `tsconfig.json`, both READMEs and CHANGELOGs, and the LICENSE; installation and the `/pi-codex`, `/fast` entry points are unchanged.
+- The generated standalone extension header comment from `npm run sync-autoload` now names the repository `xiasheng32/pi-codex` instead of a local directory name (comment only; generation and loading behavior unchanged).
+- Both READMEs follow the new packaging and testing guidance, the packaging example filename is now `pi-codex-0.4.5.tgz`, and the package and lockfile root versions are 0.4.5.
+
 ## [0.4.4] - 2026-10-16
 
 ### Changed

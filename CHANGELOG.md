@@ -2,6 +2,13 @@
 
 本项目所有显著变更都记录在此文件中。版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)，日期为发布日期。
 
+## [0.4.5] - 2026-10-16
+
+### 变更
+- 发布包文件白名单不再包含 9 个 `tests/*.test.ts`：测试仍全部保留在 GitHub 仓库，完整测试与类型检查请克隆仓库运行；解开 `.tgz` 的 `package/` 只用于安装试用。发布包从 22 个文件精简到 13 个（解包体积 336,667 B → 148,698 B），`extensions/index.ts`、`src/` 四个模块、`scripts/sync-autoload.ts`、`tsconfig.json`、双语 README 与 CHANGELOG、LICENSE 均保留，安装与 `/pi-codex`、`/fast` 入口不变。
+- `npm run sync-autoload` 生成的单文件扩展头注释来源由本机目录名改为仓库地址 `xiasheng32/pi-codex`（仅注释，不影响生成逻辑与加载行为）。
+- 双语 README 同步上述打包与测试说明，打包示例文件名更新为 `pi-codex-0.4.5.tgz`；包及锁文件根版本更新至 0.4.5。
+
 ## [0.4.4] - 2026-10-16
 
 ### 变更

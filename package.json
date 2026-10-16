@@ -1,6 +1,6 @@
 {
   "name": "pi-codex",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "description": "Pi extension: Codex 订阅额度、重置倒计时与会话内 Fast 模式。",
   "type": "module",
   "keywords": [
@@ -29,15 +29,6 @@
     "src/fast-catalog.ts",
     "src/fast-provider.ts",
     "scripts/sync-autoload.ts",
-    "tests/pi-codex.test.ts",
-    "tests/fast-mode.test.ts",
-    "tests/fast-provider.test.ts",
-    "tests/catalog.test.ts",
-    "tests/extension.test.ts",
-    "tests/transport.test.ts",
-    "tests/host.test.ts",
-    "tests/deployment.test.ts",
-    "tests/sync-autoload.test.ts",
     "tsconfig.json",
     "README.md",
     "README.en.md",
