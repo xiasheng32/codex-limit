@@ -1,15 +1,18 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, mock, test } from "node:test";
 import type { TestContext } from "node:test";
+import { zstdDecompressSync } from "node:zlib";
+import type { Model, Provider } from "@earendil-works/pi-ai";
+import { normalizeContext } from "@earendil-works/pi-ai/utils/transcript";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import { rgbColor, visibleWidth } from "@earendil-works/pi-tui";
 import piCodex, { QuotaPanel } from "../extensions/index.ts";
 import { FAST_ENTRY, FastModeController } from "../src/fast-mode.ts";
-import { QuotaController } from "../src/quota.ts";
+import { API_URL, CONSUME_RESET_URL, QuotaController, RESET_CREDITS_URL } from "../src/quota.ts";
 import { FastCatalog } from "../src/fast-catalog.ts";
 import type { FastModel } from "../src/fast-mode.ts";
-import type { QuotaState } from "../src/quota.ts";
+import type { ProviderAuth, QuotaState } from "../src/quota.ts";
 
 // No real credential lookup, model request, quota request or reset consumption is allowed.
 process.env.PI_OFFLINE = "1";
@@ -17,7 +20,12 @@ globalThis.fetch = async () => { throw new Error("Unexpected live fetch in exten
 const codex: FastModel = { id: "gpt-6.1-sol", provider: "openai-codex", api: "openai-codex-responses", baseUrl: "https://chatgpt.com/backend-api" };
 
 // Catalog wire/auth tests live separately. Extension tests inject capability facts.
-beforeEach(() => { mock.method(FastCatalog.prototype, "read", async () => ({ kind: "supported" as const })); });
+beforeEach(() => {
+	mock.method(FastCatalog.prototype, "read", async () => ({ kind: "supported" as const }));
+	mock.method(FastCatalog.prototype, "readForAuth", function(this: FastCatalog, model: FastModel | undefined, oauth: boolean) {
+		return this.read(model, oauth);
+	});
+});
 afterEach(() => { mock.restoreAll(); });
 const payload = () => ({ model: codex.id, input: [], reasoning: { effort: "high" }, tools: [], prompt_cache_key: "synthetic-cache" });
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -26,7 +34,8 @@ type Handler = (event: Record<string, unknown>, ctx: ExtensionContext) => unknow
 type Command = { handler: (args: string, ctx: ExtensionCommandContext) => Promise<void> };
 type Factory = (tui: TUI, theme: unknown, keys: unknown, done: (action?: "use") => void) => QuotaPanel;
 
-function harness(options: { entries?: Entry[]; sessionId?: string; model?: FastModel; oauth?: boolean; mode?: string; hasUI?: boolean } = {}) {
+function harness(options: { entries?: Entry[]; sessionId?: string; model?: FastModel; oauth?: boolean; mode?: string; hasUI?: boolean;
+	auth?: () => Promise<ProviderAuth | undefined> } = {}) {
 	const events = new Map<string, Handler>();
 	const commands = new Map<string, Command>();
 	const entries = options.entries ?? [];
@@ -40,13 +49,18 @@ function harness(options: { entries?: Entry[]; sessionId?: string; model?: FastM
 	let oauth = options.oauth ?? true;
 	let sessionId = options.sessionId ?? "session-A";
 	let renders = 0;
+	let provider: Provider | undefined;
 	const terminal = { rows: 32 };
 	const tui = { terminal, requestRender: () => { renders++; } } as unknown as TUI;
 	const rawContext = {
 		mode: options.mode ?? "tui", hasUI: options.hasUI ?? true, model: options.model ?? codex,
 		modelRegistry: {
 			isUsingOAuth: () => oauth,
-			getProviderAuth: () => { authCalls++; throw new Error("Unexpected credential lookup in extension test"); },
+			getProviderAuth: () => {
+				authCalls++;
+				if (options.auth) return options.auth();
+				throw new Error("Unexpected credential lookup in extension test");
+			},
 		},
 		sessionManager: { getEntries: () => entries, getSessionId: () => sessionId },
 		ui: {
@@ -67,6 +81,7 @@ function harness(options: { entries?: Entry[]; sessionId?: string; model?: FastM
 	const api = {
 		on: (name: string, handler: Handler) => { events.set(name, handler); return () => events.delete(name); },
 		registerCommand: (name: string, command: Command) => { commands.set(name, command); },
+		registerProvider: (value: Provider) => { provider = value; },
 		appendEntry: (customType: string, data: Entry["data"]) => {
 			if (appendFailure) throw new Error("Synthetic session write failure");
 			entries.push({ type: "custom", customType, data });
@@ -75,7 +90,35 @@ function harness(options: { entries?: Entry[]; sessionId?: string; model?: FastM
 	piCodex(api);
 	const fire = async (name: string, event: Record<string, unknown> = {}) => {
 		const handler = events.get(name);
-		return handler ? await handler({ type: name, ...event }, ctx) : undefined;
+		if (name !== "before_provider_request") return handler ? await handler({ type: name, ...event }, ctx) : undefined;
+		// Exercise the actual request-bound provider hook, after all extension payload hooks.
+		if (!oauth || ctx.model?.provider !== codex.provider || ctx.model.api !== codex.api
+			|| new URL(ctx.model.baseUrl).origin !== "https://chatgpt.com") {
+			return handler ? await handler({ type: name, ...event }, ctx) : undefined;
+		}
+		assert.ok(provider);
+		let transformed: unknown;
+		const model = { ...ctx.model, type: "chat", name: "Synthetic", reasoning: false, input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 10000, maxTokens: 1000,
+		} as Model<"openai-codex-responses">;
+		const result = await provider.streamSimple(model, normalizeContext({ messages: [] }), {
+			apiKey: `synthetic.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "synthetic-A" } })).toString("base64url")}.synthetic`,
+			transport: "sse", maxRetries: 0,
+			onPayload: async () => {
+				const next = handler ? await handler({ type: name, ...event }, ctx) : undefined;
+				return next === undefined ? event.payload : next;
+			},
+			fetch: async (_url, init) => {
+				const raw = new Headers(init?.headers).get("content-encoding") === "zstd"
+					? zstdDecompressSync(Buffer.from(init!.body as Uint8Array)).toString("utf8") : String(init?.body);
+				transformed = JSON.parse(raw);
+				return new Response(`data: ${JSON.stringify({ type: "response.completed", response: {
+					id: "synthetic-harness", status: "completed", output: [], usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+				} })}\n\n`, { headers: { "content-type": "text/event-stream" } });
+			},
+		}).result();
+		assert.equal(result.stopReason, "stop", result.errorMessage);
+		return transformed;
 	};
 	const command = async (name: string, args = "") => {
 		const registered = commands.get(name);
@@ -401,6 +444,7 @@ test("late quota callbacks from disposed controllers cannot make hidden status r
 	await start(h);
 	const old = controllers[0]!;
 	assert.ok(old);
+	await start(h, "reload"); // Only a session/runtime replacement disposes the controller.
 	h.rawContext.model = { ...codex, provider: "anthropic" };
 	await h.fire("model_select");
 	const writes = h.statusHistory.length;
@@ -758,6 +802,128 @@ test("ANSI-styled ready panels stay bounded through resize and recompute theme c
 	assert.match(panel.render(68).join("\n"), /订阅额度/); // Enlarging clamps the old scroll offset back to zero.
 	controller.dispose();
 });
+
+function onlineQuotaHarness(t: TestContext, postStatus = 503) {
+	const previousOffline = process.env.PI_OFFLINE;
+	process.env.PI_OFFLINE = "0";
+	t.after(() => { if (previousOffline === undefined) delete process.env.PI_OFFLINE; else process.env.PI_OFFLINE = previousOffline; });
+	let now = Date.parse("2026-10-16T12:00:00Z");
+	t.mock.method(Date, "now", () => now);
+	let poll: () => void = () => { throw new Error("Missing quota timer"); };
+	t.mock.method(globalThis, "setInterval", ((callback: () => void) => {
+		poll = callback;
+		return { unref() {} } as ReturnType<typeof setInterval>;
+	}) as typeof setInterval);
+	const posts: Record<string, unknown>[] = [];
+	let gets = 0;
+	t.mock.method(globalThis, "fetch", async (url: string | URL | Request, init?: RequestInit) => {
+		if (String(url) === CONSUME_RESET_URL) {
+			assert.equal(init?.method, "POST");
+			posts.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+			return new Response("", { status: postStatus, headers: postStatus === 429 ? { "Retry-After": "600" } : {} });
+		}
+		assert.equal(init?.method, "GET");
+		gets++;
+		if (String(url) === API_URL) return Response.json({ plan_type: "plus", rate_limit: {
+			primary_window: { used_percent: 22, limit_window_seconds: 18000 },
+		} });
+		assert.equal(String(url), RESET_CREDITS_URL);
+		return Response.json({ available_count: 1, credits: [{ id: "synthetic-card", status: "available",
+			reset_type: "codex_rate_limits", expires_at: new Date(now + 86400_000).toISOString(),
+		}] });
+	});
+	const token = `synthetic.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "synthetic-A" } })).toString("base64url")}.synthetic`;
+	const h = harness({ auth: async () => ({ source: "OAuth", auth: { apiKey: token } }) });
+	t.after(() => h.fire("session_shutdown", { reason: "quit" }));
+	return { h, posts, get gets() { return gets; }, advance: (milliseconds: number) => { now += milliseconds; }, poll: () => poll() };
+}
+
+test("idle logout clears the HUD and cached account without model_select, and polling resumes login", async (t: TestContext) => {
+	const online = onlineQuotaHarness(t);
+	const { h } = online;
+	await start(h);
+	assert.match(h.status()!, /78%/);
+	await h.command("pi-codex");
+	const panel = h.panels.at(-1)!;
+	const instance = (panel as unknown as { controller: QuotaController }).controller;
+	assert.ok(instance.getState().snapshot);
+	const gets = online.gets;
+	h.setOAuth(false);
+	online.poll();
+	await tick();
+	assert.equal(h.status(), undefined);
+	assert.equal(instance.getState().snapshot, null);
+	assert.equal(instance.getState().resetCredits?.snapshot, null);
+	assert.equal(online.gets, gets);
+	online.advance(60_000);
+	h.setOAuth(true);
+	online.poll();
+	await tick();
+	assert.match(h.status()!, /78%/);
+	assert.ok(online.gets > gets);
+	h.setOAuth(false);
+	await h.fire("agent_settled");
+	assert.equal(h.status(), undefined, "settlement must also clear a logged-out HUD");
+	assert.equal(instance.getState().snapshot, null);
+});
+
+test("logging in after an unauthenticated startup starts the HUD without a model event", async (t: TestContext) => {
+	const online = onlineQuotaHarness(t);
+	const { h } = online;
+	h.setOAuth(false);
+	await start(h);
+	assert.equal(h.status(), undefined);
+	assert.equal(online.gets, 0);
+	assert.equal(h.authCalls, 0);
+	h.setOAuth(true);
+	online.advance(60_000);
+	online.poll();
+	await tick();
+	assert.match(h.status()!, /78%/);
+	assert.equal(online.gets, 2);
+});
+
+for (const postStatus of [503, 429]) {
+	test(`same-session provider switching retains reset protection after HTTP ${postStatus}`, async (t: TestContext) => {
+		const online = onlineQuotaHarness(t, postStatus);
+		const { h, posts } = online;
+		let use = false;
+		t.mock.method(h.ctx.ui, "select", async (_title: string, options: string[]) => options.at(-1));
+		h.rawContext.ui.custom = async (factory: Factory) => {
+			let action: "use" | undefined;
+			const panel = factory(h.tui, undefined, undefined, (value) => { action = value; });
+			h.panels.push(panel);
+			panel.render(68);
+			if (use) { use = false; panel.handleInput("u"); }
+			panel.handleInput("q");
+			return action;
+		};
+		const attempt = async () => { use = true; await h.command("pi-codex"); };
+		await start(h);
+		await attempt();
+		assert.equal(posts.length, 1);
+		const instance = (h.panels.at(-1)! as unknown as { controller: QuotaController }).controller;
+		await attempt();
+		assert.equal(posts.length, 1);
+		h.rawContext.model = { ...codex, provider: "google" };
+		await h.fire("model_select");
+		assert.equal(h.status(), undefined);
+		online.advance(60_000);
+		h.rawContext.model = codex;
+		await h.fire("model_select");
+		await tick();
+		await attempt();
+		const resumed = (h.panels.at(-1)! as unknown as { controller: QuotaController }).controller;
+		assert.equal(resumed, instance, "model switches retain the session's safety controller");
+		assert.equal(posts.length, 1, "neither an uncertain POST nor a 429 may be retried by switching providers");
+		assert.match(resumed.getResetButton().hint, postStatus === 429 ? /冷却/ : /结果未决/);
+		if (postStatus === 429) {
+			online.advance(540_000);
+			await attempt();
+			assert.equal(posts.length, 2, "an explicit retry is allowed only after the original cooldown");
+		}
+	});
+}
 
 test("non-TUI and headless sessions never install a status bar", async () => {
 	for (const options of [{ mode: "rpc" }, { hasUI: false }]) {

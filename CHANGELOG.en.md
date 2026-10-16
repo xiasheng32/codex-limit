@@ -3,6 +3,15 @@
 All notable changes to this project are documented in this file.
 Versions follow [Semantic Versioning](https://semver.org/); dates are release dates.
 
+## [0.4.3] - 2026-10-16
+
+### Fixed
+- Switching providers within a session now suspends quota work without erasing redemption locks or HTTP 429 cooldowns. Previously dispatched credits stay locked even if terminal records later regress to stale available records.
+- Polling and settlement clear account caches, cancel old work, and hide the HUD after logout; polling resumes after login. Identity checks also run during cooldown and ordinary backoff without bypassing 429 or displaying the previous account.
+- A thin native provider adapter binds Fast catalog checks to the actual request's captured OAuth credentials after all payload events, preventing account-switch races. Native stream/streamSimple options, OAuth, model configuration, and SSE/WebSocket behavior remain intact.
+- Reset-credit dates strictly validate calendar days, leap years, clocks, and offsets; normalized invalid dates can no longer authorize redemption.
+- Added regression coverage for account races, logout recovery, model-switch safety, terminal-record rollback, strict dates, and native provider options; standalone deployment and package allowlists include the adapter.
+
 ## [0.4.2] - 2026-10-15
 
 ### Changed

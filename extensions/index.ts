@@ -8,6 +8,7 @@ import type { QuotaState } from "../src/quota.ts";
 import { FAST_ENTRY, FastModeController, isCodexSubscription, restoreFastMode } from "../src/fast-mode.ts";
 import type { FastCapability } from "../src/fast-mode.ts";
 import { FastCatalog } from "../src/fast-catalog.ts";
+import { createFastProvider } from "../src/fast-provider.ts";
 
 const STATUS_KEY = "pi-codex";
 const LOW_QUOTA_DARK = rgbColor(240, 160, 160);
@@ -185,31 +186,51 @@ export default function piCodex(pi: ExtensionAPI): void {
 			const instance = new QuotaController({
 				resolveAuth: () => ctx.modelRegistry.getProviderAuth(PROVIDER),
 				offline: isOffline(process.env.PI_OFFLINE),
-				onChange: (state) => { if (controller === instance && activeContext) updateStatus(activeContext, state); },
+				onChange: (state) => {
+					if (controller === instance && activeContext && usesCodexSubscription(activeContext)) updateStatus(activeContext, state);
+				},
 			});
 			controller = instance;
 		}
 		return controller;
 	}
 
-	function stop(ctx: ExtensionContext): void {
+	function hideQuota(ctx: ExtensionContext): void {
 		if (timer !== undefined) clearInterval(timer);
 		timer = undefined;
-		controller?.dispose();
-		controller = null;
+		// Model changes must not erase this session's consumption locks or cooldowns.
+		controller?.suspend();
 		if (ctx.mode === "tui" && ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);
 	}
 
-	function startQuota(ctx: ExtensionContext): void {
-		if (ctx.mode !== "tui" || !ctx.hasUI || !usesCodexSubscription(ctx)) return;
-		const instance = getController(ctx);
-		updateStatus(ctx, instance.getState());
+	function stop(ctx: ExtensionContext): void {
+		hideQuota(ctx);
+		controller?.dispose();
+		controller = null;
+	}
+
+	function refreshQuota(ctx: ExtensionContext, instance: QuotaController): void {
+		if (!usesCodexSubscription(ctx)) {
+			// Logout does not emit model_select. Keep polling for a later login,
+			// but cancel old work and clear the previous account immediately.
+			instance.suspend();
+			catalog.reset();
+			fast.setCapability({ kind: "unknown", reason: "Codex 登录已变化" });
+			fast.resetResponse();
+			updateStatus(ctx, instance.getState());
+			return;
+		}
 		void instance.refresh();
+		updateStatus(ctx, instance.getState());
+	}
+
+	function startQuota(ctx: ExtensionContext): void {
+		if (ctx.mode !== "tui" || !ctx.hasUI || !isCodexSubscription(ctx.model, true)) return;
+		const instance = getController(ctx);
+		refreshQuota(ctx, instance);
 		if (timer === undefined && !isOffline(process.env.PI_OFFLINE)) {
 			timer = setInterval(() => {
-				if (!activeContext || !usesCodexSubscription(activeContext)) return;
-				void instance.refresh();
-				if (controller === instance) updateStatus(activeContext, instance.getState());
+				if (activeContext && controller === instance) refreshQuota(activeContext, instance);
 			}, POLL_MS);
 			timer.unref();
 		}
@@ -232,20 +253,43 @@ export default function piCodex(pi: ExtensionAPI): void {
 		activeContext = ctx;
 		fast.resetResponse();
 		fast.setCapability({ kind: "unknown" });
-		if (!usesCodexSubscription(ctx)) stop(ctx);
+		if (!isCodexSubscription(ctx.model, true)) hideQuota(ctx);
 		else startQuota(ctx);
 		if (fast.enabled && usesCodexSubscription(ctx)) void readCapability(ctx);
 	});
 
-	pi.on("before_provider_request", async (event, ctx) => {
-		activeContext = ctx;
+	// The payload event exposes no request credentials. Bind the final tier to
+	// the native provider's already-resolved token, not the current login.
+	pi.registerProvider(createFastProvider((model, apiKey, signal) => {
 		const owner = fastGeneration;
-		const key = modelKey(ctx);
+		const revision = preferenceRevision;
+		const key = JSON.stringify([model.provider, model.api, model.id, model.baseUrl]);
+		const applicable = !!activeContext && key === modelKey(activeContext)
+			&& isCodexSubscription(model, usesCodexSubscription(activeContext));
+		return async (payload) => {
+			if (!applicable) return undefined;
+			const current = () => owner === fastGeneration && revision === preferenceRevision
+				&& !!activeContext && key === modelKey(activeContext) && usesCodexSubscription(activeContext);
+			const capability: FastCapability = fast.enabled && current()
+				? await catalog.readForAuth(model, true, apiKey ? { source: "OAuth", auth: { apiKey } } : undefined, signal)
+				: { kind: "unknown" };
+			if (!current()) {
+				// A replaced session/model must not mutate the new response tracker.
+				if (payload !== null && typeof payload === "object" && !Array.isArray(payload)
+					&& (payload as Record<string, unknown>).model === model.id && Array.isArray((payload as Record<string, unknown>).input)) {
+					return { ...payload, service_tier: "default" };
+				}
+				return undefined;
+			}
+			const result = fast.transform(payload, model, true, capability);
+			if (controller && activeContext) updateStatus(activeContext, controller.getState());
+			return result;
+		};
+	}));
+
+	pi.on("before_provider_request", async (_event, ctx) => {
+		activeContext = ctx;
 		if (fast.enabled && usesCodexSubscription(ctx)) await readCapability(ctx);
-		if (owner !== fastGeneration || key !== modelKey(ctx)) return undefined;
-		const payload = fast.transform(event.payload, ctx.model, usesCodexSubscription(ctx));
-		if (payload !== undefined && controller) updateStatus(ctx, controller.getState());
-		return payload;
 	});
 
 	pi.on("provider_stream_event", (event, ctx) => {
@@ -258,9 +302,8 @@ export default function piCodex(pi: ExtensionAPI): void {
 	pi.on("agent_settled", (_event, ctx) => {
 		activeContext = ctx;
 		fast.settle();
-		if (ctx.mode !== "tui" || !controller || !usesCodexSubscription(ctx)) return;
-		void controller.refresh();
-		updateStatus(ctx, controller.getState());
+		if (ctx.mode !== "tui" || !controller) return;
+		refreshQuota(ctx, controller);
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {

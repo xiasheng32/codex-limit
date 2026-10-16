@@ -21,6 +21,7 @@ for (const transport of ["sse", "websocket"] as const) {
 		const directory = await mkdtemp(join(tmpdir(), "pi-codex-host-"));
 		t.after(() => rm(directory, { recursive: true, force: true }));
 		t.mock.method(FastCatalog.prototype, "read", async () => ({ kind: "supported" as const }));
+		t.mock.method(FastCatalog.prototype, "readForAuth", async () => ({ kind: "supported" as const }));
 		const sent: Record<string, unknown>[] = [];
 		const observed: unknown[] = [];
 		const reported: unknown[] = [];
@@ -90,10 +91,111 @@ for (const transport of ["sse", "websocket"] as const) {
 		assert.equal(sent.length, 2, "off command must not become a model request");
 		await session.prompt("Synthetic standard request");
 		assert.deepEqual(sent.map((body) => body.service_tier), ["default", "priority", "default"]);
-		assert.deepEqual(observed.map((body) => (body as Record<string, unknown>).service_tier), ["default", "priority", "default"]);
+		assert.deepEqual(observed.map((body) => (body as Record<string, unknown>).service_tier), [undefined, undefined, undefined],
+			"payload observers run before the final request-bound tier decision");
 		assert.equal(reported.filter((event) => (event as { type: string }).type === "response.completed").length, 3);
 		assert.deepEqual(manager.getEntries().filter((entry) => entry.type === "custom" && entry.customType === FAST_ENTRY)
 			.map((entry) => (entry as { data: { enabled: boolean } }).data.enabled), [true, false]);
 		assert.deepEqual(errors, []);
 	});
+}
+
+for (const transport of ["sse", "websocket"] as const) {
+	for (const stage of ["payload", "headers", "catalog"] as const) {
+		for (const supportsA of [false, true]) {
+			test(`SDK ${transport} binds Fast to A/${supportsA ? "priority" : "default"} after login changes in ${stage}`, { timeout: 15_000 }, async (t) => {
+				const previousOffline = process.env.PI_OFFLINE;
+				process.env.PI_OFFLINE = "0";
+				t.after(() => { if (previousOffline === undefined) delete process.env.PI_OFFLINE; else process.env.PI_OFFLINE = previousOffline; });
+				let now = Date.parse("2026-10-16T12:00:00Z");
+				t.mock.method(Date, "now", () => now);
+				const directory = await mkdtemp(join(tmpdir(), "pi-codex-host-identity-"));
+				t.after(() => rm(directory, { recursive: true, force: true }));
+				const credentials = new InMemoryCredentialStore();
+				const token = (account: string) => `synthetic.${Buffer.from(JSON.stringify({
+					"https://api.openai.com/auth": { chatgpt_account_id: account },
+				})).toString("base64url")}.synthetic`;
+				const login = (account: string) => credentials.modify("openai-codex", async () => ({
+					type: "oauth", access: token(account), refresh: "synthetic-refresh", expires: now + 86400_000,
+				}));
+				await login("A");
+				let armed = false;
+				let modelId = "";
+				const sent: { account: string | null; tier: unknown }[] = [];
+				const directoryAccounts: (string | null)[] = [];
+				const responseEvents = () => [
+					{ type: "response.created", response: { id: "synthetic-identity", status: "in_progress" } },
+					{ type: "response.completed", response: { id: "synthetic-identity", status: "completed", service_tier: "default",
+						usage: { input_tokens: 1, output_tokens: 0, total_tokens: 1 }, output: [] } },
+				];
+				t.mock.method(globalThis, "fetch", async (url: string | URL | Request, init?: RequestInit) => {
+					const parsed = new URL(String(url));
+					assert.equal(parsed.origin, "https://chatgpt.com");
+					const account = new Headers(init?.headers).get("chatgpt-account-id");
+					if (parsed.pathname.endsWith("/models")) {
+						directoryAccounts.push(account);
+						if (armed && stage === "catalog") await login("B");
+						return Response.json({ models: [{ slug: modelId,
+							service_tiers: (account === "A" ? supportsA : !supportsA) ? [{ id: "priority" }] : [],
+						}] });
+					}
+					assert.equal(transport, "sse", "WebSocket must not fall back to HTTP");
+					assert.ok(parsed.pathname.endsWith("/responses"));
+					const raw = new Headers(init?.headers).get("content-encoding") === "zstd"
+						? zstdDecompressSync(Buffer.from(init!.body as Uint8Array)).toString("utf8") : String(init?.body);
+					sent.push({ account, tier: (JSON.parse(raw) as Record<string, unknown>).service_tier });
+					return new Response(responseEvents().map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""), {
+						headers: { "content-type": "text/event-stream" },
+					});
+				});
+				class SyntheticSocket extends EventTarget {
+					readyState = 0;
+					private readonly account: string | null;
+					constructor(url: string, options: { headers: Record<string, string> }) {
+						super();
+						assert.equal(new URL(url).hostname, "chatgpt.com");
+						this.account = new Headers(options.headers).get("chatgpt-account-id");
+						queueMicrotask(() => { this.readyState = 1; this.dispatchEvent(new Event("open")); });
+					}
+					send(value: string): void {
+						sent.push({ account: this.account, tier: (JSON.parse(value) as Record<string, unknown>).service_tier });
+						setImmediate(() => { for (const event of responseEvents()) this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(event) })); });
+					}
+					close(): void { this.readyState = 3; }
+				}
+				if (transport === "websocket") {
+					const original = globalThis.WebSocket;
+					globalThis.WebSocket = SyntheticSocket as unknown as typeof WebSocket;
+					t.after(() => { globalThis.WebSocket = original; });
+				}
+				const runtime = await ModelRuntime.create({ credentials, modelsPath: null, allowModelNetwork: false });
+				const model = runtime.getModels("openai-codex").find((candidate) => candidate.api === "openai-codex-responses");
+				assert.ok(model);
+				modelId = model.id;
+				const settings = SettingsManager.inMemory({ transport, cacheWarming: "off", compaction: { enabled: false }, retry: { enabled: false } });
+				const switcher = (pi: ExtensionAPI) => {
+					pi.on("before_provider_request", async () => { if (armed && stage === "payload") await login("B"); });
+					pi.on("before_provider_headers", async () => { if (armed && stage === "headers") await login("B"); });
+				};
+				const loader = new DefaultResourceLoader({ cwd: directory, agentDir: directory, settingsManager: settings,
+					noExtensions: true, noSkills: true, noPromptTemplates: true, noContextFiles: true, disabledBuiltinExtensions: ["mcp"],
+					extensionFactories: [switcher, piCodex] });
+				await loader.reload();
+				const manager = SessionManager.inMemory(directory);
+				manager.appendCustomEntry(FAST_ENTRY, { enabled: true, sessionId: manager.getSessionId() });
+				const { session, extensionsResult } = await createAgentSession({ cwd: directory, agentDir: directory, modelRuntime: runtime,
+					model, thinkingLevel: "high", noTools: "all", settingsManager: settings, sessionManager: manager, resourceLoader: loader });
+				t.after(() => session.dispose());
+				assert.deepEqual(extensionsResult.errors, []);
+				const errors: unknown[] = [];
+				await session.bindExtensions({ mode: "rpc", onError: (error) => { errors.push(error); } });
+				armed = true;
+				if (stage === "catalog") now += 6 * 60_000;
+				await session.prompt("Synthetic account-bound Fast request");
+				assert.deepEqual(sent, [{ account: "A", tier: supportsA ? "priority" : "default" }]);
+				assert.ok(directoryAccounts.includes("A"));
+				assert.deepEqual(errors, []);
+			});
+		}
+	}
 }

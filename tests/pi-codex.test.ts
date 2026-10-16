@@ -390,6 +390,40 @@ test("unknown card statuses/dates never masquerade as available or unlimited", (
 	assertSanitized(state, "raw-secret");
 });
 
+test("credit dates strictly validate calendar, clock and offsets before consumption", async () => {
+	const invalid = [
+		"2027-02-29T12:00:00Z", "2100-02-29T12:00:00Z", "2028-02-30T12:00:00Z",
+		"2027-04-31T12:00:00Z", "2027-00-01T12:00:00Z", "2027-13-01T12:00:00Z",
+		"2027-01-00T12:00:00Z", "2027-01-32T12:00:00Z", "2027-01-01T24:00:00Z",
+		"2027-01-01T12:60:00Z", "2027-01-01T12:00:60Z", "2027-01-01T12:00:00+24:00",
+		"2027-01-01T12:00:00-01:60", "2027-01-01T12:00:00+1:00", "2027-01-01T12:00:00",
+		"0001-02-29T00:00:00Z", "0099-02-29T00:00:00Z",
+	];
+	for (const date of invalid) {
+		const cards = parseResetCredits({ credits: [{ status: "available", expires_at: date, granted_at: date, redeemed_at: date }] }, NOW);
+		assert.deepEqual(present(cards.credits)[0], { status: "available", fullReset: false, expiresAt: null, grantedAt: null, redeemedAt: null }, date);
+		for (const field of ["expires_at", "granted_at", "redeemed_at"] as const) {
+			const h = harness({ resetTransport: async () => {
+				const data = resetPayload(); data.credits[0][field] = date; return Response.json(data);
+			} });
+			await h.controller.useResetCredit(resetUI());
+			assert.equal(h.consumeRequests.length, 0, `${field}: ${date}`);
+			h.controller.dispose();
+		}
+	}
+	for (const date of ["0000-02-29T00:00:00Z", "0004-02-29T00:00:00Z", "0099-12-31T23:59:59Z",
+		"2000-02-29T12:00:00Z", "2028-02-29T12:34:56.123456+05:45", "2028-03-01T00:00:00.5-03:30",
+		"2028-03-01T00:00:00+23:59"]) {
+		assert.equal(present(parseResetCredits({ credits: [{ expires_at: date }] }, NOW).credits)[0].expiresAt, Date.parse(date), date);
+	}
+	const h = harness({ resetTransport: async () => {
+		const data = resetPayload(); data.credits[0].expires_at = "2028-02-29T12:34:56.123456+05:45"; return Response.json(data);
+	} });
+	await h.controller.useResetCredit(resetUI());
+	assert.equal(h.consumeRequests.length, 1, "valid offset and fractional seconds remain eligible");
+	h.controller.dispose();
+});
+
 test("low-quota bar threshold includes 20% and zero without rounding", () => {
 	for (const remaining of [0, 0.1, 19.9, 20]) assert.equal(isLowQuota(remaining), true);
 	for (const remaining of [20.001, 21, 77, 100]) assert.equal(isLowQuota(remaining), false);
@@ -820,6 +854,92 @@ test("429 cooldown blocks manual refresh too, then permits recovery", async () =
 	h.controller.dispose();
 });
 
+test("429 auth-only refresh detects account/logout without HTTP or changing attempt/cooldown", async () => {
+	for (const force of [false, true]) {
+		for (const change of ["account", "logout"]) {
+			let auth: ProviderAuth | undefined = oauth();
+			let limited = false;
+			const h = harness({ auth: async () => auth, transport: async () => limited
+				? new Response("", { status: 429, headers: { "Retry-After": "120" } }) : Response.json(payload()) });
+			await h.controller.refresh(); limited = true;
+			const before = await h.controller.refresh(true);
+			h.advance(10_000);
+			const changes = h.changes.length;
+			assert.deepEqual(await h.controller.refresh(force), before, "same-account check must not extend cooldown or flash loading");
+			assert.equal(h.changes.length, changes);
+			auth = change === "account" ? oauth("synthetic-account-B") : undefined;
+			const after = await h.controller.refresh(force);
+			assert.equal(after.phase, change === "account" ? "rate_limited" : "not_logged_in");
+			assert.equal(after.snapshot, null);
+			assert.equal(after.resetCredits?.snapshot, null);
+			assert.equal(after.lastSuccessAt, null);
+			assert.equal(after.lastAttemptAt, before.lastAttemptAt);
+			assert.equal(h.requests.length, 2);
+			assert.equal(h.resetRequests.length, 1);
+			if (change === "account") assert.equal(after.retryAt, before.retryAt);
+			auth = oauth("synthetic-account-B");
+			await h.controller.refresh(true);
+			assert.equal(h.requests.length, 2, "login must not bypass 429");
+			h.advance(110_000); limited = false;
+			assert.equal((await h.controller.refresh()).phase, "ready");
+			assert.equal(h.requests.length, 3);
+			h.controller.dispose();
+		}
+	}
+});
+
+test("auth-only throttled checks stay single-flight and clear identities without loading", async () => {
+	let auth: ProviderAuth | undefined = oauth();
+	let waiting: ReturnType<typeof deferred<ProviderAuth | undefined>> | undefined;
+	const h = harness({ auth: () => waiting ? waiting.promise : Promise.resolve(auth) });
+	const initial = await h.controller.refresh();
+	h.advance(1_000);
+	waiting = deferred<ProviderAuth | undefined>();
+	const changes = h.changes.length;
+	const first = h.controller.refresh();
+	assert.equal(first, h.controller.refresh(true));
+	await tick();
+	assert.equal(h.changes.length, changes);
+	waiting.resolve(oauth()); await first; waiting = undefined;
+	assert.deepEqual(h.controller.getState(), initial);
+	auth = undefined; assert.equal((await h.controller.refresh()).phase, "not_logged_in");
+	auth = oauth("synthetic-account-B");
+	const switched = await h.controller.refresh();
+	assert.equal(switched.phase, "idle");
+	assert.equal(switched.snapshot, null);
+	assert.equal(switched.lastAttemptAt, initial.lastAttemptAt);
+	assert.equal(h.requests.length, 1);
+	h.advance(THROTTLE_MS - 1_000);
+	assert.equal((await h.controller.refresh()).phase, "ready");
+	h.controller.dispose();
+});
+
+test("identity changes during ordinary failure backoff clear cache without extending HTTP retry", async () => {
+	let auth: ProviderAuth | undefined = oauth();
+	let fail = false;
+	const h = harness({ auth: async () => auth, transport: async () => {
+		if (fail) throw new Error("synthetic-offline");
+		return Response.json(payload());
+	} });
+	await h.controller.refresh(); fail = true;
+	const failed = await h.controller.refresh(true);
+	h.advance(10_000);
+	auth = oauth("synthetic-account-B");
+	const switched = await h.controller.refresh();
+	assert.equal(switched.phase, "idle");
+	assert.equal(switched.snapshot, null);
+	assert.equal(switched.resetCredits?.snapshot, null);
+	assert.equal(switched.lastAttemptAt, failed.lastAttemptAt);
+	assert.equal(switched.retryAt, failed.retryAt);
+	auth = undefined;
+	assert.equal((await h.controller.refresh()).phase, "not_logged_in");
+	assert.equal(h.requests.length, 2);
+	auth = oauth("synthetic-account-B"); fail = false;
+	assert.equal((await h.controller.refresh(true)).phase, "ready", "force bypasses normal backoff");
+	assert.equal(h.requests.length, 3);
+	h.controller.dispose();
+});
+
 test("401/403 clear old quotas and ask for pi login without echoing response bodies", async () => {
 	for (const status of [401, 403]) {
 		let fail = false;
@@ -1194,6 +1314,44 @@ test("unknown outcome remains locked across pending records and account switchin
 	h.controller.dispose();
 });
 
+test("successful/uncertain POST locks survive terminal records, old available and account round trips", async () => {
+	for (const result of ["reset", "uncertain"]) {
+		for (const terminal of ["used", "expired"]) {
+			let status = "available";
+			let id = "synthetic-account-A";
+			const h = harness({ auth: async () => oauth(id),
+				consumeTransport: async () => result === "reset" ? Response.json({ code: "reset" }) : new Response("", { status: 502 }),
+				resetTransport: async () => { const data = resetPayload(); data.credits[0].status = status; return Response.json(data); } });
+			await h.controller.useResetCredit(resetUI());
+			assert.equal(h.consumeRequests.length, 1);
+			status = terminal; await h.controller.refresh(true);
+			assert.equal(resetCards(h.controller.getState())[0].status, terminal);
+			status = "available"; await h.controller.refresh(true);
+			await h.controller.useResetCredit(resetUI());
+			assert.equal(h.consumeRequests.length, 1);
+			id = "synthetic-account-B"; await h.controller.refresh(true);
+			id = "synthetic-account-A"; await h.controller.refresh(true);
+			await h.controller.useResetCredit(resetUI());
+			assert.equal(h.consumeRequests.length, 1);
+			h.controller.suspend();
+			await h.controller.refresh(true);
+			await h.controller.useResetCredit(resetUI());
+			assert.equal(h.consumeRequests.length, 1, "suspend must also retain locks");
+			h.controller.dispose();
+		}
+	}
+});
+
+test("explicit non-consuming rejections still allow a new confirmed POST", async () => {
+	for (const response of [() => Response.json({ code: "nothing_to_reset" }), () => Response.json({ code: "no_credit" }), () => new Response("", { status: 400 })]) {
+		const h = harness({ consumeTransport: async () => response() });
+		await h.controller.useResetCredit(resetUI());
+		await h.controller.useResetCredit(resetUI());
+		assert.equal(h.consumeRequests.length, 2);
+		h.controller.dispose();
+	}
+});
+
 test("success and uncertain results keep old data stale when reconciliation fails", async () => {
 	for (const code of ["reset", "unknown"]) {
 		let sent = false;
@@ -1310,6 +1468,87 @@ test("an existing refresh completes before reset preparation; no stale refresh r
 	assert.equal(h.consumeRequests.length, 1);
 	assert.equal(h.requests.length, 4);
 	h.controller.dispose();
+});
+
+test("suspend cancels auth/HTTP and a new refresh never reuses or is cleared by old work", async () => {
+	for (const stage of ["auth", "http"]) {
+		const oldAuth = deferred<ProviderAuth>();
+		const oldResponse = deferred<Response>();
+		const newResponse = deferred<Response>();
+		let old = true;
+		const h = harness({ auth: () => old && stage === "auth" ? oldAuth.promise : Promise.resolve(oauth()),
+			transport: () => old ? oldResponse.promise : newResponse.promise });
+		const pending = h.controller.refresh(); await tick();
+		const changes = h.changes.length;
+		h.controller.suspend();
+		assert.equal(h.changes.length, changes, "entrypoint owns hiding/publishing");
+		assert.equal(h.controller.getState().phase, "idle");
+		assert.equal(h.controller.getState().snapshot, null);
+		assert.equal(h.controller.getState().resetCredits?.snapshot, null);
+		if (stage === "http") assert.equal(h.requests[0].init.signal.aborted, true);
+		old = false;
+		const resumed = h.controller.refresh(true);
+		assert.notEqual(resumed, pending);
+		await pending; await tick();
+		assert.equal(h.controller.refresh(true), resumed, "old finally must not clear resumed single-flight");
+		newResponse.resolve(Response.json(payload()));
+		assert.equal((await resumed).phase, "ready");
+		oldAuth.resolve(oauth("late-account")); oldResponse.resolve(Response.json({ plan_type: "late" }));
+		await tick();
+		assert.equal(h.controller.getState().snapshot?.plan, "plus");
+		h.controller.dispose();
+	}
+});
+
+test("suspend cancels reset dialogs/POST, ignores late completion and allows fresh refresh", async () => {
+	for (const stage of ["dialog", "post"]) {
+		const dialog = deferred();
+		const post = deferred<Response>();
+		const h = harness({ consumeTransport: () => post.promise });
+		const ui = resetUI({ onSelect: async () => { if (stage === "dialog") await dialog.promise; } });
+		const pending = h.controller.useResetCredit(ui); await tick();
+		h.controller.suspend(); await pending;
+		assert.equal(h.controller.getState().resetUse, undefined);
+		assert.equal(h.controller.getState().lastSuccessAt, null);
+		assert.equal(h.controller.getResetButton().phase, "disabled");
+		assert.equal((await h.controller.refresh(true)).phase, "ready");
+		dialog.resolve(); post.resolve(Response.json({ code: "reset" })); await tick();
+		assert.equal(ui.notices.length, 0);
+		assert.equal(h.controller.getState().resetUse, undefined);
+		if (stage === "post") {
+			assert.equal(h.consumeRequests[0].init.signal.aborted, true);
+			await h.controller.useResetCredit(resetUI());
+			assert.equal(h.consumeRequests.length, 1, "cancelled dispatched POST stays locked");
+		} else {
+			await h.controller.useResetCredit(resetUI({ pick: false }));
+			assert.equal(h.consumeRequests.length, 0);
+		}
+		h.controller.dispose();
+	}
+});
+
+test("suspend preserves usage, card and consume 429 cooldowns across resumed authentication", async () => {
+	for (const endpoint of [API_URL, RESET_CREDITS_URL, CONSUME_RESET_URL]) {
+		const limited = async () => new Response("", { status: 429, headers: { "Retry-After": "120" } });
+		const h = harness({ transport: endpoint === API_URL ? limited : undefined,
+			resetTransport: endpoint === RESET_CREDITS_URL ? limited : undefined,
+			consumeTransport: endpoint === CONSUME_RESET_URL ? limited : undefined });
+		if (endpoint === CONSUME_RESET_URL) await h.controller.useResetCredit(resetUI());
+		else await h.controller.refresh();
+		const attempts = h.allRequests.filter((request) => request.url === endpoint).length;
+		h.controller.suspend();
+		assert.equal(h.controller.getState().error, null);
+		assert.equal(h.controller.getState().retryAt, null);
+		h.advance(119_999);
+		await h.controller.refresh(true);
+		await h.controller.useResetCredit(resetUI());
+		assert.equal(h.allRequests.filter((request) => request.url === endpoint).length, attempts, endpoint);
+		h.advance(1);
+		if (endpoint === CONSUME_RESET_URL) await h.controller.useResetCredit(resetUI());
+		else await h.controller.refresh(true);
+		assert.equal(h.allRequests.filter((request) => request.url === endpoint).length, attempts + 1, endpoint);
+		h.controller.dispose();
+	}
 });
 
 test("shutdown settles waiting dialogs/auth/POST and ignores late results", async () => {

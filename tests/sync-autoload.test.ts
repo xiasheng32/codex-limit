@@ -10,10 +10,10 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 const script = join(root, "scripts/sync-autoload.ts");
 
 async function expectedBundle(): Promise<string> {
-	const source = (await Promise.all(["src/quota.ts", "src/fast-mode.ts", "src/fast-catalog.ts"].map((path) => readFile(join(root, path), "utf8")))).join("\n")
+	const source = (await Promise.all(["src/quota.ts", "src/fast-mode.ts", "src/fast-catalog.ts", "src/fast-provider.ts"].map((path) => readFile(join(root, path), "utf8")))).join("\n")
 		.replace(/^import .* from "\.\/(?:quota|fast-mode)\.ts";\n/gm, "");
 	const entry = await readFile(join(root, "extensions/index.ts"), "utf8");
-	const body = entry.replace(/^import .* from "\.\.\/src\/(?:quota|fast-mode|fast-catalog)\.ts";\n/gm, "");
+	const body = entry.replace(/^import .* from "\.\.\/src\/(?:quota|fast-mode|fast-catalog|fast-provider)\.ts";\n/gm, "");
 	const split = body.indexOf('const STATUS_KEY = "pi-codex";');
 	assert.ok(split >= 0);
 	return "// Self-contained pi autoload extension. Generated from CLIProjects/pi-codex by npm run sync-autoload.\n"

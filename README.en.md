@@ -19,7 +19,7 @@
 
 ## Installation
 
-Requires Node.js >=22.19 and a pi host exposing `modelRegistry.getProviderAuth()`, `before_provider_request`, and `provider_stream_event` (development types and integration tests use **1.2.0**, verified by full-pipeline Pi SDK tests and offline loading checks). At runtime pi supplies the host packages, with no runtime dependencies; the full test suite and type checking need this project's development dependencies. Project code is TypeScript run natively by Node, with no compiled artifacts or extra TS runner.
+Requires Node.js >=22.19 and a pi host exposing `modelRegistry.getProviderAuth()`, native `registerProvider()`, `before_provider_request`, and `provider_stream_event` (development types and integration tests use **1.2.0**, verified by full-pipeline Pi SDK tests and offline loading checks). At runtime pi supplies the host packages, with no runtime dependencies; the full test suite and type checking need this project's development dependencies. Project code is TypeScript run natively by Node, with no compiled artifacts or extra TS runner.
 
 After cloning, run from the project root containing `package.json` (or the `package/` directory after extracting a `.tgz`):
 
@@ -43,7 +43,7 @@ After installing or updating, restart pi or run `/reload` in an existing session
 ### Avoid duplicate loading and generate a standalone file
 
 - **Enable either the installed package or the standalone copy at `~/.pi/agent/extensions/pi-codex.ts`, never both**, or commands, statuses, and queries are registered twice. If a standalone copy exists, disable the old source with `pi config`, or back it up and move it out of the autoload directory. Trial commands use `-ne` to isolate other extensions.
-- `extensions/index.ts` depends on `src/quota.ts`, `src/fast-mode.ts`, and `src/fast-catalog.ts` and cannot be copied to the autoload directory alone. For a standalone deployment run `npm run sync-autoload` from the project root (overwrites `~/.pi/agent/extensions/pi-codex.ts` by default, then `/reload`), or `npm run sync-autoload -- /tmp/pi-codex.ts` to generate one file without touching the active extension.
+- `extensions/index.ts` depends on `src/quota.ts`, `src/fast-mode.ts`, `src/fast-catalog.ts`, and `src/fast-provider.ts` and cannot be copied to the autoload directory alone. For a standalone deployment run `npm run sync-autoload` from the project root (overwrites `~/.pi/agent/extensions/pi-codex.ts` by default, then `/reload`), or `npm run sync-autoload -- /tmp/pi-codex.ts` to generate one file without touching the active extension.
 - The script updates only the selected output file; editing the source does not update an existing copy. Review the source and choose an installation method: offline mode never queries the real account, while online interactive startup does. Neither the repository nor the local archive contains credentials.
 
 ### Migrating from codex-limit (v0.4.1 rename)
@@ -79,7 +79,7 @@ Only two lines appear under the panel's Fast heading: when enabled and supported
 
 - The only switches are `/fast on` and `/fast off`; bare `/fast` or invalid arguments show usage without changing the choice. New sessions default to off. The choice is stored as a session entry bound to the session ID and restored on resume or `/reload` (no global config, no model-context message); new and forked sessions do not inherit it. A failed save keeps the previous state; switching models retains the choice and clears old response observations.
 - Capability is never guessed from model names: the extension queries the official catalog at `GET /backend-api/codex/models?client_version=<Pi version>` and reports supported, unsupported, or unknown. Results are cached in memory for 5 minutes, failed queries back off for 30 seconds, account changes isolate old results, and offline mode never queries. Missing catalog data or failed queries report unknown capability.
-- `/fast on` validates the current model first and saves the switch only when the catalog explicitly supports it; unknown or unsupported capability or an ineligible model explains the reason and preserves the previous choice. For models matching **the official `chatgpt.com` endpoint + provider `openai-codex` + API `openai-codex-responses` + OAuth subscription authentication**, enabled with supported capability sets `service_tier: "priority"`; disabled sets `default` explicitly. Other request parameters and all other requests are unchanged.
+- `/fast on` validates the current model first and saves the switch only when the catalog explicitly supports it; unknown or unsupported capability or an ineligible model explains the reason and preserves the previous choice. For models matching **the official `chatgpt.com` endpoint + provider `openai-codex` + API `openai-codex-responses` + OAuth subscription authentication**, enabled with supported capability sets `service_tier: "priority"`; disabled sets `default` explicitly. Other request parameters and all other requests are unchanged. A thin native provider adapter preserves separate host `stream` / `streamSimple` behavior and makes the final tier decision after all payload events using the credentials captured by that request, not the UI's current login. Payload observers in other extensions may not yet see the final tier.
 - Footer suffixes: none when disabled; `· Fast` when enabled with supported capability; `· Fast能力未知` (capability unknown) when an enabled preference is retained but capability is unknown; `· Fast不可用` (Fast unavailable) when unsupported. Switching to another provider or unofficial model hides the entire Codex status and leaves its requests unchanged; switching back restores it. `· Fast` only means supported capability plus an enabled switch, **not server confirmation or a measured speedup**.
 - The panel separately reports the last observed server tier: `priority` / `fast` show Fast, `default` shows the standard tier, a missing tier shows as not returned, and failed, incomplete, or ambiguously attributed responses show as unconfirmable. After overlapping foreground/background requests to the same model, this loaded instance stops attributing later responses until a reload or resume starts a new lifecycle. This affects observations only; the extension never retries or resends at another tier.
 - Ordinary Fast consumes subscription quota at **2.5 times** the standard rate. Ultrafast is not enabled in this version, no live speed was measured, and no fixed speedup is promised. See [OpenAI's speed documentation](https://learn.chatgpt.com/docs/agent-configuration/speed), the [upstream pi-usage Fast implementation](https://github.com/narumiruna/pi-extensions/blob/main/packages/pi-usage/src/codex-fast.ts), and [pi's public extension interfaces](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/extensions/types.ts).
@@ -92,7 +92,7 @@ Only two lines appear under the panel's Fast heading: when enabled and supported
 2. Review the selected credit, quota, and the irreversible-action notice. Confirmation defaults to **Cancel**; only an explicit confirmation sends a redemption request. Esc, default Enter, or closing never redeems.
 3. After confirmation the account and credit are rechecked; an account change, invalid credit, or expired credit cancels without substituting another credit. Each confirmation sends at most one POST, with no automatic use or retry.
 4. Only `reset` is reported as a server-confirmed reset; `nothing_to_reset`, `no_credit`, and `already_redeemed` are reported as no reset needed, no available credit, and already redeemed. Real data is then queried again instead of setting quota to 100% or decrementing credits locally; a failed sync is reported separately with stale-cache marking. The flow returns to the detail panel.
-- Redemption requests have a 10-second timeout. **A disconnect, timeout, 5xx, or unrecognized response after sending may mean the credit was already redeemed**: the extension only queries to synchronize and never resends. The credit stays locked in the current instance until a query explicitly reports it used or expired, and confirmed credits cannot be reused via stale "available" records. Protection is in-memory only; **reloading or restarting clears the lock — when the result is uncertain, check the official usage page instead of reloading to retry.** A 429 cooldown cannot be bypassed by refreshing.
+- Redemption requests have a 10-second timeout. **A disconnect, timeout, 5xx, or unrecognized response after sending may mean the credit was already redeemed**: the extension only queries to synchronize and never resends. The credit stays locked throughout the session controller lifecycle, even after used/expired records, so a stale "available" rollback cannot authorize another request. Switching providers or accounts, and logging out within the same session, preserve locks and 429 cooldowns. Protection is in-memory only; **reloading or restarting clears the lock — when the result is uncertain, check the official usage page instead of reloading to retry.** A 429 cooldown cannot be bypassed by refreshing or switching providers within the session.
 - RPC mode queries only on manual command invocation with text notifications and no redemption entry point; print/JSON modes without UI enable no HUD, queries, or redemption.
 
 ### Refresh policy and status
@@ -102,9 +102,9 @@ Only two lines appear under the panel's Fast heading: when enabled and supported
 - With a Codex subscription model active, interactive startup queries without blocking and attempts refresh every 60 seconds and on `agent_settled`, at least 30 seconds apart. Switching models stops automatic queries and hides the status; manual `/pi-codex` still shows details.
 - Only one refresh runs at a time, resolving authentication through pi again instead of permanently caching tokens. Selection, confirmation, and redemption run as a single operation, pausing other refreshes throughout.
 - Quota and credit requests each have a 10-second timeout, quota first. Failed quota queries retry with exponential backoff from 60 seconds up to 5 minutes; credit failures back off 60 seconds independently without hiding successful quota data. Neither query's 429 cooldown can be bypassed.
-- Failed credit-detail queries keep a clearly marked stale cache; an available count from `usage` can summarize missing details, and HTTP 404 or a changed format does not mean no credits. Network/data errors keep the last data marked `🍧 Codex[过期] 额度：`; invalid authentication, logout, or account changes clear old data.
+- Failed credit-detail queries keep a clearly marked stale cache; an available count from `usage` can summarize missing details, and HTTP 404 or a changed format does not mean no credits. Network/data errors keep the last data marked `🍧 Codex[过期] 额度：`; invalid authentication or detected logout/account changes clear old data. Identity checks continue during cooldown and backoff without bypassing HTTP cooldowns. Polling or settlement hides the HUD after detecting logout, and polling resumes after login.
 - Missing login shows `Codex 未登录`; authentication, timeout, rate-limit, and format problems have distinct sanitized messages. Missing primary windows show that no primary quota data is available, **not 0% or unlimited quota**.
-- Closing, switching, or reloading a session clears timers, cancels queries and waits, and ignores late results; canceling a local wait cannot undo a server-side redemption already sent. Host OAuth renewal stays managed by pi and cannot be cancelled by the extension.
+- Closing, switching, or reloading a session clears timers, cancels queries and waits, and ignores late results; switching providers within a session only suspends work and clears old account data while preserving redemption safety state. Canceling a local wait cannot undo a server-side redemption already sent. Host OAuth renewal stays managed by pi and cannot be cancelled by the extension.
 
 Offline mode also skips authentication resolution and networking, including opening details (see `PI_OFFLINE` in Configuration):
 
@@ -148,7 +148,7 @@ pi --offline -ne -e . --help
 - Tests cover quota parsing, the full redemption flow (confirm/cancel, a single POST, the four official return codes, unresolved-operation locks), Fast routing and server tiers, catalog caching and backoff, session restore and model switching, throttling, single-flight, backoff, rate limits, and shutdown cleanup, plus the sync script in temporary directories. They use only synthetic JWTs, fake authentication, fake HTTP responses, fake selection UI, and controlled time, and **never redeem real credits**.
 - Entry integration tests drive real provider serialization over simulated transports through full-pipeline Pi SDK checks (`createAgentSession` + `ExtensionRunner`) to verify slash commands and request tiers. `tsconfig.json` enables strict checks; native Node execution only strips types and does not replace `npm run typecheck`.
 - The help command queries no real quota and alone cannot prove extension loading; to check real data, run `pi -ne -e .` and compare `/pi-codex` with the official usage page.
-- Local packaging: `npm pack --offline --ignore-scripts --pack-destination ..` creates `pi-codex-0.4.2.tgz` in the parent directory without installing the extension or publishing to npm. Upload this project's contents with `package.json` at the repository root; never upload the parent directory, `.tgz` files, credentials, or local configuration. The manifest uses an explicit file allowlist without `node_modules/`.
+- Local packaging: `npm pack --offline --ignore-scripts --pack-destination ..` creates `pi-codex-0.4.3.tgz` in the parent directory without installing the extension or publishing to npm. Upload this project's contents with `package.json` at the repository root; never upload the parent directory, `.tgz` files, credentials, or local configuration. The manifest uses an explicit file allowlist without `node_modules/`.
 
 ## Project structure
 
@@ -158,12 +158,15 @@ pi-codex/
 ├── src/quota.ts                    # parsing, requests, and state machine tested offline
 ├── src/fast-mode.ts                # session-local Fast and server-tier state
 ├── src/fast-catalog.ts             # official model catalog, capability cache, and backoff
+├── src/fast-provider.ts            # native provider adapter and request-auth binding
 ├── tests/pi-codex.test.ts          # quota parsing, requests, and state machine
 ├── tests/fast-mode.test.ts         # session-local Fast and server tiers
+├── tests/fast-provider.test.ts     # native options, auth binding, and concurrent requests
 ├── tests/catalog.test.ts           # model catalog, cache, and backoff
 ├── tests/extension.test.ts         # commands, sessions, and model-switch integration
 ├── tests/transport.test.ts         # offline host HTTP/WebSocket serializer checks
 ├── tests/host.test.ts              # full-pipeline Pi SDK checks (createAgentSession + ExtensionRunner)
+├── tests/deployment.test.ts        # generated extension loaded through the real host
 ├── tests/sync-autoload.test.ts     # synchronization tests in temporary directories
 ├── scripts/sync-autoload.ts        # explicitly synchronizes the pi autoload copy
 ├── tsconfig.json                   # type checking only; no JavaScript output
@@ -179,7 +182,7 @@ pi loads only the manifest's entry point; `src/` is included in the distributed 
 
 ## Version history
 
-Current version **v0.4.2**. See [CHANGELOG.md](CHANGELOG.en.md) for the full history.
+Current version **v0.4.3**. See [CHANGELOG.md](CHANGELOG.en.md) for the full history.
 
 ## License
 

@@ -93,14 +93,26 @@ export class FastCatalog {
 	}
 
 	async read(model: FastModel | undefined, oauth: boolean): Promise<FastCapability> {
+		return this.readCapability(model, oauth);
+	}
+
+	/** Request-local credentials are authoritative; never resolve the current UI account. */
+	async readForAuth(model: FastModel | undefined, oauth: boolean, auth: ProviderAuth | undefined, signal?: AbortSignal): Promise<FastCapability> {
+		return this.readCapability(model, oauth, { auth, signal });
+	}
+
+	private async readCapability(model: FastModel | undefined, oauth: boolean,
+		request?: { auth: ProviderAuth | undefined; signal?: AbortSignal }): Promise<FastCapability> {
 		const unknown = (reason: string): FastCapability => ({ kind: "unknown", reason });
 		if (!isCodexSubscription(model, oauth)) return unknown("仅适用于官方 Codex OAuth 订阅模型");
 		if (this.options.offline) return unknown("离线模式，未查询模型能力");
 		const owner = this.generation;
 		const sequence = ++this.identitySequence;
-		const signal = AbortSignal.any([this.lifecycle.signal, AbortSignal.timeout(this.options.timeoutMs ?? 10_000)]);
+		const signal = AbortSignal.any([this.lifecycle.signal, AbortSignal.timeout(this.options.timeoutMs ?? 10_000),
+			...(request?.signal ? [request.signal] : [])]);
+		if (signal.aborted) return unknown("模型能力查询已取消");
 		let auth: ProviderAuth | undefined;
-		try { auth = await catalogWait(this.options.resolveAuth(), signal); }
+		try { auth = request ? request.auth : await catalogWait(this.options.resolveAuth(), signal); }
 		catch {
 			if (owner === this.generation && sequence >= this.latestIdentity) { this.latestIdentity = sequence; this.clearAccount(); }
 			return unknown("无法验证当前 Codex 账号的模型能力");
@@ -117,7 +129,8 @@ export class FastCatalog {
 		if ((!this.models || now() - this.fetchedAt >= FAST_CATALOG_TTL) && now() >= this.retryAt) {
 			if (!this.inflight) {
 				const controller = new AbortController();
-				const requestSignal = AbortSignal.any([this.lifecycle.signal, controller.signal, AbortSignal.timeout(this.options.timeoutMs ?? 10_000)]);
+				const requestSignal = AbortSignal.any([this.lifecycle.signal, controller.signal, AbortSignal.timeout(this.options.timeoutMs ?? 10_000),
+					...(request?.signal ? [request.signal] : [])]);
 				const url = new URL("https://chatgpt.com/backend-api/codex/models");
 				url.searchParams.set("client_version", this.options.version);
 				const promise = Promise.resolve().then(async () => {
@@ -133,7 +146,7 @@ export class FastCatalog {
 							this.failure = "模型目录未提供当前模型的 Fast 能力";
 						}
 					} catch {
-						if (!controller.signal.aborted && owner === this.generation && this.identity === identity) {
+						if (!controller.signal.aborted && !request?.signal?.aborted && owner === this.generation && this.identity === identity) {
 							this.models = undefined; this.retryAt = now() + FAST_CATALOG_BACKOFF;
 							this.failure = "模型目录查询失败，Fast 能力未知（30 秒后重试）";
 						}
@@ -145,7 +158,7 @@ export class FastCatalog {
 			try { await catalogWait(this.inflight.promise, signal); } catch { return unknown("模型能力查询已取消"); }
 		}
 		if (signal.aborted || owner !== this.generation || this.identity !== identity) return unknown("当前 Codex 账号已变化");
-		if (waitedForDirectory) {
+		if (waitedForDirectory && !request) {
 			// Login/logout does not necessarily emit model_select. Revalidate the account
 			// after directory I/O before applying its advertised capability.
 			let latest: ProviderAuth | undefined;

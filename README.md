@@ -19,7 +19,7 @@
 
 ## 安装
 
-需要 Node.js >=22.19 和提供 `modelRegistry.getProviderAuth()`、`before_provider_request`、`provider_stream_event` 的 pi（开发类型与集成测试使用 **1.2.0**，已通过 Pi SDK 全链路测试与离线加载验证）。运行时由 pi 提供宿主包，无运行时依赖；完整测试与类型检查需安装本项目开发依赖。项目代码统一为 TypeScript，由 Node 原生运行，无编译产物或额外 TS 运行器。
+需要 Node.js >=22.19 和提供 `modelRegistry.getProviderAuth()`、原生 `registerProvider()`、`before_provider_request`、`provider_stream_event` 的 pi（开发类型与集成测试使用 **1.2.0**，已通过 Pi SDK 全链路测试与离线加载验证）。运行时由 pi 提供宿主包，无运行时依赖；完整测试与类型检查需安装本项目开发依赖。项目代码统一为 TypeScript，由 Node 原生运行，无编译产物或额外 TS 运行器。
 
 克隆后在包含 `package.json` 的项目根目录运行（解开 `.tgz` 后进入 `package/`）：
 
@@ -43,7 +43,7 @@ pi update git:github.com/xiasheng32/pi-codex   # 已安装时更新到仓库最�
 ### 避免重复加载与单文件部署
 
 - **包安装与 `~/.pi/agent/extensions/pi-codex.ts` 独立副本只能择一启用**，否则会重复注册命令、状态栏与查询任务。已有独立副本时先用 `pi config` 禁用旧来源，或备份后移出 autoload 目录；试用命令的 `-ne` 会隔离其他扩展。
-- `extensions/index.ts` 依赖 `src/quota.ts`、`src/fast-mode.ts`、`src/fast-catalog.ts`，不能单独复制到 autoload 目录。单文件部署在项目根目录运行 `npm run sync-autoload`（默认覆盖 `~/.pi/agent/extensions/pi-codex.ts`，然后 `/reload`），或 `npm run sync-autoload -- /tmp/pi-codex.ts` 仅生成指定文件、不改启用中的插件。
+- `extensions/index.ts` 依赖 `src/quota.ts`、`src/fast-mode.ts`、`src/fast-catalog.ts`、`src/fast-provider.ts`，不能单独复制到 autoload 目录。单文件部署在项目根目录运行 `npm run sync-autoload`（默认覆盖 `~/.pi/agent/extensions/pi-codex.ts`，然后 `/reload`），或 `npm run sync-autoload -- /tmp/pi-codex.ts` 仅生成指定文件、不改启用中的插件。
 - 同步脚本只更新指定输出文件；修改源码不会自动更新已有副本。请审阅源码后自行选择安装方式：离线模式不查询真实账号，在线交互式启动会查询；仓库和本地压缩包不含任何凭据。
 
 ### 从 codex-limit 迁移（v0.4.1 更名）
@@ -79,7 +79,7 @@ v0.4.1 起插件由 `codex-limit` 更名为 `pi-codex`，属破坏性变更，�
 
 - 唯一开关入口是 `/fast on` 与 `/fast off`；裸 `/fast` 或无效参数显示用法，不改变选择。新会话默认关闭；选择保存为绑定 session ID 的会话记录，恢复同一会话或 `/reload` 时保留（不写全局配置、不进模型上下文），新建或 fork 会话不继承。保存失败保留原状态；切换模型保留选择并清除旧的响应观察。
 - 能力判定不按模型名称猜测：向官方 `GET /backend-api/codex/models?client_version=<Pi 版本>` 查询模型目录，结果为支持、不支持或未知。内存缓存 5 分钟，查询失败退避 30 秒，账号切换隔离旧结果，离线模式不查询；目录缺失或查询失败显示能力未知。
-- `/fast on` 先验证当前模型能力，仅目录明确支持才保存开关；能力未知、不支持或模型不适用时提示原因并保留原选择。对匹配**官方 `chatgpt.com` 端点 + `openai-codex` provider + `openai-codex-responses` API + OAuth 订阅认证**的模型请求：开关开启且能力支持时设 `service_tier: "priority"`，关闭时显式设 `default`，其余请求参数保留、其他请求不变。
+- `/fast on` 先验证当前模型能力，仅目录明确支持才保存开关；能力未知、不支持或模型不适用时提示原因并保留原选择。对匹配**官方 `chatgpt.com` 端点 + `openai-codex` provider + `openai-codex-responses` API + OAuth 订阅认证**的模型请求：开关开启且能力支持时设 `service_tier: "priority"`，关闭时显式设 `default`，其余请求参数保留、其他请求不变。薄原生 provider 适配层分别保留宿主的 `stream` / `streamSimple`，在所有 payload 事件后使用该请求已捕获的凭据查询能力并最终设置档位，不按此时界面的登录账号替请求决定 Fast；其他扩展观察到的 payload 可能尚未包含最终档位。
 - 页脚后缀：关闭无后缀；开启且能力支持 `· Fast`；保留开启偏好但能力未知 `· Fast能力未知`；能力不支持 `· Fast不可用`；切换其他供应商或非官方订阅模型后整条 Codex 状态栏隐藏，请求不变，切回恢复。`· Fast` 只表示能力支持且开关开启，**不代表服务端确认或速度提升**。
 - 面板单独显示最近观察到的服务端档位：`priority` / `fast` 显示 Fast，`default` 显示"服务端返回标准档位"，缺失显示"未返回"，失败/不完整/并发归属不明显示"无法确认"。同模型前后台请求重叠后本次加载不再归属后续响应，重新加载或恢复会话后等待新请求；只影响观察，不改变能力判断与开关状态。扩展不自动重试或降级重发。
 - 普通 Fast 的订阅额度消耗按标准模式的 **2.5 倍**；本版不启用 Ultrafast，未做真实测速，不承诺固定提速。参考 [OpenAI 速度说明](https://learn.chatgpt.com/docs/agent-configuration/speed)、[上游 pi-usage Fast 实现](https://github.com/narumiruna/pi-extensions/blob/main/packages/pi-usage/src/codex-fast.ts)、[pi 扩展事件与会话接口](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/extensions/types.ts)。
@@ -93,7 +93,7 @@ v0.4.1 起插件由 `codex-limit` 更名为 `pi-codex`，属破坏性变更，�
 3. 确认后再核对账号和卡片；账号改变、卡片失效或到期即取消，不替换成另一张卡。每次确认最多一次 POST，不自动使用、不自动重试。
 4. 明确返回 `reset` 才提示服务端确认重置；`nothing_to_reset`、`no_credit`、`already_redeemed` 分别提示无需重置、无可用卡、已兑换。之后重新查询真实数据，不本地改成 100% 或减卡；同步失败单独提示并标注过期缓存。流程结束回到详情面板。
 
-- 消费请求 10 秒超时。**发出后的断连、超时、5xx 或无法识别的响应可能已消费**：只查询同步、不重发，对应卡在当前实例内保持锁定，直至查询到明确已用/过期状态；已确认消费的卡不会因旧"可用"记录被重复使用。未决保护仅在内存，**重载/重启会清除锁；结果不明时先核对官方用量页，不要通过重载重试**。消费接口 429 冷却不可通过刷新绕过。
+- 消费请求 10 秒超时。**发出后的断连、超时、5xx 或无法识别的响应可能已消费**：只查询同步、不重发，对应卡在当前会话控制器内持续锁定，查询到已用/过期后也不解除，以免旧"可用"记录回退导致重复请求；同会话切换 provider、切号或退出登录不清除锁及 429 冷却。保护仅在内存，**重载/重启会清除锁；结果不明时先核对官方用量页，不要通过重载重试**。消费接口 429 冷却不可通过刷新或同会话切换 provider 绕过。
 - RPC 模式仅手动执行命令时查询，结果用文本通知，不提供消费入口；print/json 无 UI 模式不启用 HUD、查询或消费。
 
 ### 刷新与状态
@@ -103,9 +103,9 @@ v0.4.1 起插件由 `codex-limit` 更名为 `pi-codex`，属破坏性变更，�
 - 当前使用 Codex 订阅模型时，交互式会话启动非阻塞查询，每 60 秒和 `agent_settled` 时尝试刷新，自动请求至少间隔 30 秒；切换其他模型停止自动查询并隐藏状态栏，手动 `/pi-codex` 仍可查看详情。
 - 一次仅一个刷新请求，每次重新通过 pi 解析认证，不永久缓存 token。选卡、确认和消费全程单飞，期间暂停其他刷新。
 - 额度与重置卡请求各 10 秒超时，先额度后卡片。额度失败自动重试从 60 秒指数退避至最高 5 分钟，卡片失败独立退避 60 秒，不影响已成功的额度显示；两种查询的 429 冷却均不可绕过。
-- 卡片明细失败保留并标注过期缓存；`usage` 提供的可用张数可作明细缺失时的摘要，HTTP 404/格式变化不等于没有重置卡。网络/数据错误保留上次数据并以 `🍧 Codex[过期] 额度：` 标记；认证失效、退出登录或账号变化清空旧数据。
+- 卡片明细失败保留并标注过期缓存；`usage` 提供的可用张数可作明细缺失时的摘要，HTTP 404/格式变化不等于没有重置卡。网络/数据错误保留上次数据并以 `🍧 Codex[过期] 额度：` 标记；认证失效或检测到退出登录、账号变化时清空旧数据；冷却与退避期间仍核对认证，不发额度 HTTP 请求。轮询或会话结算检测注销后隐藏 HUD，重新登录后恢复轮询。
 - 未登录显示 `Codex 未登录`；认证、超时、限流和格式问题各有提示，详情不含原始异常或响应。没有主额度窗口显示"暂无主额度数据"，**不代表 0% 或无限额度**。
-- 会话关闭、切换和重载时清理定时器，取消查询与等待并忽略迟到结果；取消本地等待不能撤销已发出的服务端消费。宿主的 OAuth 续期仍由 pi 管理，扩展无法取消。
+- 会话关闭、切换和重载时清理定时器，取消查询与等待并忽略迟到结果；同会话切换其他 provider 仅暂停控制器并清理旧数据，保留用卡安全状态；取消本地等待不能撤销已发出的服务端消费。宿主的 OAuth 续期仍由 pi 管理，扩展无法取消。
 
 离线模式连认证解析一起跳过，打开详情也不联网（`PI_OFFLINE` 见"配置"）：
 
@@ -148,7 +148,7 @@ pi --offline -ne -e . --help
 - 测试覆盖额度解析、用卡全流程（确认/取消/单次 POST/四种官方返回码/未决锁）、Fast 路由与服务端档位、模型目录缓存与退避、会话恢复与模型切换、节流/单飞/退避/限流/关闭清理，以及临时目录中的同步脚本；只用合成 JWT、假认证、假 HTTP 响应、假选择 UI 和可控时间，**绝不消费真实卡片**。
 - 入口集成测试经 Pi SDK 全链路（`createAgentSession` + `ExtensionRunner`）驱动真实 provider 序列化验证 slash commands 与请求档位；`tsconfig.json` 开启严格检查，Node 原生运行只擦除类型，不能替代 `npm run typecheck`。
 - 帮助命令不查询真实额度，也不能单独证明扩展加载成功；如需核对真实数据，运行 `pi -ne -e .` 用 `/pi-codex` 对照官方用量页。
-- 本地打包：`npm pack --offline --ignore-scripts --pack-destination ..` 生成上层 `pi-codex-0.4.2.tgz`，不安装插件、不发布 npm。上传 GitHub 使用本项目目录内容（`package.json` 位于仓库根目录），不要上传父目录、`.tgz`、凭据或本机配置；包清单为精确文件白名单，不含 `node_modules/`。
+- 本地打包：`npm pack --offline --ignore-scripts --pack-destination ..` 生成上层 `pi-codex-0.4.3.tgz`，不安装插件、不发布 npm。上传 GitHub 使用本项目目录内容（`package.json` 位于仓库根目录），不要上传父目录、`.tgz`、凭据或本机配置；包清单为精确文件白名单，不含 `node_modules/`。
 
 ## 文件结构
 
@@ -158,12 +158,15 @@ pi-codex/
 ├── src/quota.ts                    # 可离线测试的解析、请求和状态机
 ├── src/fast-mode.ts                # 会话内 Fast 与服务端档位状态
 ├── src/fast-catalog.ts             # 官方模型目录、能力缓存与退避
+├── src/fast-provider.ts            # 原生 provider 适配与请求凭据绑定
 ├── tests/pi-codex.test.ts          # 额度解析、请求与状态机测试
 ├── tests/fast-mode.test.ts         # 会话内 Fast 与服务端档位测试
+├── tests/fast-provider.test.ts     # 原生选项、认证绑定与并发请求测试
 ├── tests/catalog.test.ts           # 模型目录、缓存与退避测试
 ├── tests/extension.test.ts         # 命令、会话与模型切换集成验证
 ├── tests/transport.test.ts         # 真实宿主 HTTP/WebSocket 序列化的离线验证
 ├── tests/host.test.ts              # Pi SDK 全链路（createAgentSession + ExtensionRunner）
+├── tests/deployment.test.ts        # 真实宿主加载生成的单文件扩展
 ├── tests/sync-autoload.test.ts     # 临时目录中的同步脚本测试
 ├── scripts/sync-autoload.ts        # 显式同步 pi 自加载副本
 ├── tsconfig.json                   # 只做类型检查，不生成 JS
@@ -179,7 +182,7 @@ Pi 通过清单只加载入口文件；`src/` 同时包含在发布文件中，�
 
 ## 版本更新
 
-当前版本 **v0.4.2**。完整更新记录见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本 **v0.4.3**。完整更新记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 许可
 

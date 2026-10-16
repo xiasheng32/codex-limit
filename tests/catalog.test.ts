@@ -157,6 +157,103 @@ test("login and logout during directory I/O are revalidated even without another
 	}
 });
 
+test("readForAuth never resolves UI auth and binds both capability directions to the supplied token", async () => {
+	for (const aSupported of [false, true]) {
+		const f = fixture({ auth: async () => { throw new Error("UI resolver must not run"); }, fetch: async (_url, init) => {
+			const headers = new Headers(init?.headers);
+			const a = headers.get("chatgpt-account-id") === "synthetic-A";
+			assert.equal(headers.get("authorization"), `Bearer ${token(a ? "synthetic-A" : "synthetic-B")}`);
+			return Response.json({ models: [{ slug: model.id, service_tiers: a === aSupported ? [{ id: "priority" }] : [] }] });
+		} });
+		// Simulate a UI/cache already on B, then an A request whose auth was captured earlier.
+		assert.equal((await f.catalog.readForAuth(model, true, credential("synthetic-B"))).kind, aSupported ? "unsupported" : "supported");
+		assert.equal((await f.catalog.readForAuth(model, true, credential())).kind, aSupported ? "supported" : "unsupported");
+		assert.equal((await f.catalog.readForAuth(model, true, credential())).kind, aSupported ? "supported" : "unsupported");
+		assert.equal(f.requests, 2); assert.equal(f.authCalls, 0);
+	}
+});
+
+test("readForAuth does not revalidate against UI account changes after directory I/O", async () => {
+	let current = credential();
+	const held = deferred<Response>();
+	const f = fixture({ auth: async () => current, fetch: async () => held.promise });
+	const pending = f.catalog.readForAuth(model, true, current);
+	current = credential("synthetic-B"); held.resolve(Response.json(directory));
+	assert.equal((await pending).kind, "supported"); assert.equal(f.authCalls, 0);
+});
+
+test("readForAuth isolates concurrent identities, including same-account token rotation", async () => {
+	for (const next of [credential("synthetic-B"), credential("synthetic-A", "rotated")]) {
+		const held = deferred<Response>(); let calls = 0;
+		const f = fixture({ fetch: async () => ++calls === 1 ? held.promise : Response.json({ models: [{ slug: model.id, service_tiers: [] }] }) });
+		const a = f.catalog.readForAuth(model, true, credential());
+		await new Promise((resolve) => setImmediate(resolve));
+		const b = f.catalog.readForAuth(model, true, next);
+		assert.equal((await a).kind, "unknown"); assert.equal((await b).kind, "unsupported");
+		held.resolve(Response.json(directory));
+		assert.equal((await f.catalog.readForAuth(model, true, next)).kind, "unsupported");
+		assert.equal(f.requests, 2); assert.equal(f.authCalls, 0);
+	}
+});
+
+test("readForAuth shares same-identity fetches and honors cache expiry, failure backoff and reset", async () => {
+	let fails = false;
+	const f = fixture({ fetch: async () => fails ? new Response("private", { status: 401 }) : Response.json(directory) });
+	const read = () => f.catalog.readForAuth(model, true, credential());
+	assert.deepEqual((await Promise.all([read(), read()])).map((v) => v.kind), ["supported", "supported"]);
+	assert.equal(f.requests, 1);
+	f.advance(299_999); await read(); assert.equal(f.requests, 1);
+	fails = true; f.advance(1); assert.equal((await read()).kind, "unknown");
+	fails = false; f.advance(29_999); assert.equal((await read()).kind, "unknown"); assert.equal(f.requests, 2);
+	f.advance(1); assert.equal((await read()).kind, "supported"); assert.equal(f.requests, 3);
+	f.catalog.reset(); assert.equal((await read()).kind, "supported"); assert.equal(f.requests, 4);
+	assert.equal(f.authCalls, 0);
+});
+
+test("readForAuth rejects invalid auth and applicability without resolving or fetching", async () => {
+	const f = fixture();
+	for (const auth of [undefined, { source: "API key", auth: { apiKey: token() } }, credential(""),
+		{ source: "OAuth", auth: { apiKey: "invalid" } }]) {
+		assert.equal((await f.catalog.readForAuth(model, true, auth)).kind, "unknown");
+	}
+	assert.equal((await f.catalog.readForAuth(model, false, credential())).kind, "unknown");
+	assert.equal((await f.catalog.readForAuth({ ...model, baseUrl: "https://relay.example" }, true, credential())).kind, "unknown");
+	const offline = fixture({ offline: true });
+	assert.equal((await offline.catalog.readForAuth(model, true, credential())).kind, "unknown");
+	assert.equal(f.requests, 0); assert.equal(f.authCalls, 0); assert.equal(offline.requests, 0);
+});
+
+test("readForAuth cancellation and reset settle uncooperative fetches and discard late results", async () => {
+	for (const cancel of ["signal", "reset"] as const) {
+		const held = deferred<Response>(); let calls = 0; let transportSignal: AbortSignal | undefined;
+		const controller = new AbortController();
+		const f = fixture({ fetch: async (_url, init) => {
+			transportSignal = init?.signal ?? undefined;
+			return ++calls === 1 ? held.promise : Response.json({ models: [] });
+		} });
+		const pending = f.catalog.readForAuth(model, true, credential(), controller.signal);
+		await new Promise((resolve) => setImmediate(resolve));
+		if (cancel === "signal") controller.abort(); else f.catalog.reset();
+		assert.equal((await pending).kind, "unknown"); assert.ok(transportSignal?.aborted);
+		held.resolve(Response.json(directory));
+		assert.equal((await f.catalog.readForAuth(model, true, credential())).kind, "unknown");
+		assert.equal(f.requests, 2); assert.equal(f.authCalls, 0);
+	}
+	const f = fixture(); const controller = new AbortController(); controller.abort();
+	assert.equal((await f.catalog.readForAuth(model, true, credential(), controller.signal)).kind, "unknown");
+	assert.equal(f.requests, 0);
+});
+
+test("readForAuth enforces timeout and eight-MiB directory limit", async () => {
+	const large = fixture({ fetch: async () => new Response("x".repeat(8 * 1024 * 1024 + 1)) });
+	assert.equal((await large.catalog.readForAuth(model, true, credential())).kind, "unknown");
+	const f = fixture({ fetch: () => new Promise<never>(() => {}), timeoutMs: 10 });
+	const keepAlive = setTimeout(() => {}, 1000);
+	try { assert.equal((await f.catalog.readForAuth(model, true, credential())).kind, "unknown"); }
+	finally { clearTimeout(keepAlive); }
+	assert.equal(f.authCalls, 0);
+});
+
 test("timeouts settle auth and transports that ignore cancellation", async () => {
 	const never = new Promise<never>(() => {});
 	const auth = fixture({ auth: () => never, timeoutMs: 10 });

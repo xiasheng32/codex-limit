@@ -111,7 +111,9 @@ function privateResetCredits(payload: unknown, snapshot: ResetCreditsSnapshot): 
 		const card = snapshot.credits?.[index];
 		if (!isRecord(row) || !card || typeof row.id !== "string" || !/^[A-Za-z0-9_-]{1,256}$/.test(row.id) || counts.get(row.id) !== 1) return [];
 		return [{ id: row.id, index, card, eligible: card.fullReset && card.status === "available"
-			&& (row.expires_at == null || card.expiresAt !== null) }];
+			&& (row.expires_at == null || card.expiresAt !== null)
+			&& (row.granted_at == null || card.grantedAt !== null)
+			&& (row.redeemed_at == null || card.redeemedAt !== null) }];
 	});
 }
 
@@ -171,7 +173,16 @@ function optionalCount(value: unknown): number | null {
 }
 
 function creditDate(value: unknown): number | null {
-	if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) return null;
+	if (typeof value !== "string") return null;
+	const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/.exec(value);
+	if (!match) return null;
+	const [year, month, day, hour, minute, second] = match.slice(1, 7).map(Number);
+	const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+	const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+	// Validate components directly: Date.parse normalizes invalid days, and Date.UTC remaps years 00–99.
+	if (month < 1 || month > 12 || day < 1 || day > days[month - 1]
+		|| hour > 23 || minute > 59 || second > 59
+		|| Number(match[7] ?? 0) > 23 || Number(match[8] ?? 0) > 59) return null;
 	const timestamp = Date.parse(value);
 	return Number.isFinite(timestamp) ? timestamp : null;
 }
@@ -351,24 +362,15 @@ export class QuotaController {
 			return Promise.resolve(this.getState());
 		}
 		if (this.inflight) return this.inflight;
-		const now = this.now();
-		if (now < this.rateLimitUntil) return Promise.resolve(this.getState());
-		if (!force && (now < this.nextAutomaticAt
-			|| (this.state.lastAttemptAt !== null && now - this.state.lastAttemptAt < THROTTLE_MS))) {
-			return Promise.resolve(this.getState());
-		}
-
 		const generation = ++this.generation;
 		const request = new AbortController();
 		this.request = request;
-		this.state = { ...this.state, phase: "loading", lastAttemptAt: now, error: null };
 		this.inflight = Promise.resolve().then(() => this.performRefresh(generation, request, force)).finally(() => {
 			if (this.request === request) {
 				this.request = null;
 				this.inflight = null;
 			}
 		});
-		this.publish();
 		return this.inflight;
 	}
 
@@ -523,6 +525,19 @@ export class QuotaController {
 		if (this.state.resetCredits) this.state.resetCredits.stale = this.state.resetCredits.snapshot !== null;
 	}
 
+	/** Cancel this session's work without losing consumption locks or HTTP cooldowns. */
+	suspend(): void {
+		if (this.disposed) return;
+		this.generation++;
+		this.request?.abort();
+		this.resetFlow?.abort();
+		this.request = null;
+		this.inflight = null;
+		this.resetFlow = null;
+		this.clearAccount();
+		this.state = { ...this.state, phase: "idle", error: null, retryAt: null };
+	}
+
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
@@ -551,7 +566,7 @@ export class QuotaController {
 		this.creditRows = [];
 		this.accountId = null;
 		this.resetRetryAt = 0;
-		this.resetRateLimitUntil = 0;
+		// HTTP 429 cooldowns survive identity changes and suspension.
 		this.state = { ...this.state, snapshot: null, lastSuccessAt: null, stale: false, resetUse: undefined, resetCredits: { snapshot: null, stale: false, error: null, retryAt: null } };
 	}
 
@@ -602,10 +617,6 @@ export class QuotaController {
 			if (!this.current(generation)) return;
 			this.creditRows = privateResetCredits(payload, snapshot);
 			this.cardsRevision++;
-			const blocked = this.blockedCredits.get(accountId);
-			for (const row of this.creditRows) {
-				if (row.card.status === "used" || row.card.status === "expired") blocked?.delete(row.id);
-			}
 			this.resetRetryAt = 0;
 			this.resetRateLimitUntil = 0;
 			this.state.resetCredits = { snapshot, stale: false, error: null, retryAt: null };
@@ -625,14 +636,13 @@ export class QuotaController {
 			} catch {
 				if (!this.current(generation) || request.signal.aborted) return this.getState();
 				this.clearAccount();
-				this.fail("auth_error", { kind: "auth" });
+				this.state = { ...this.state, phase: "auth_error", error: { kind: "auth" } };
+				this.publish();
 				return this.getState();
 			}
 			if (!this.current(generation)) return this.getState();
 			if (!auth) {
 				this.clearAccount();
-				this.failures = 0;
-				this.nextAutomaticAt = this.now() + THROTTLE_MS;
 				this.state = { ...this.state, phase: "not_logged_in", error: null, retryAt: null };
 				this.publish();
 				return this.getState();
@@ -641,15 +651,26 @@ export class QuotaController {
 			const accountId = token && extractAccountId(token);
 			if (auth.source !== "OAuth" || !accountId) {
 				this.clearAccount();
-				this.fail("auth_error", { kind: auth.source !== "OAuth" ? "unsupported_auth" : "invalid_auth" });
+				this.state = { ...this.state, phase: "auth_error", error: { kind: auth.source !== "OAuth" ? "unsupported_auth" : "invalid_auth" } };
+				this.publish();
 				return this.getState();
 			}
 			if (this.accountId !== accountId) {
 				this.clearAccount();
 				this.accountId = accountId;
+				const limited = this.now() < this.rateLimitUntil;
+				this.state = { ...this.state, phase: limited ? "rate_limited" : "idle",
+					error: limited ? { kind: "rate_limit", httpStatus: 429 } : null,
+					retryAt: limited ? this.rateLimitUntil : this.now() < this.nextAutomaticAt ? this.nextAutomaticAt : null };
 				this.publish();
 			}
 
+			// Auth is single-flight even during cooldown; only HTTP attempts affect timing/loading.
+			const now = this.now();
+			if (now < this.rateLimitUntil || (!force && (now < this.nextAutomaticAt
+				|| (this.state.lastAttemptAt !== null && now - this.state.lastAttemptAt < THROTTLE_MS)))) return this.getState();
+			this.state = { ...this.state, phase: "loading", lastAttemptAt: now, error: null };
+			this.publish();
 			const timeout = (this.options.timeoutSignal ?? AbortSignal.timeout)(TIMEOUT_MS);
 			quotaSignal = AbortSignal.any([request.signal, timeout]);
 			quotaSignal.throwIfAborted();

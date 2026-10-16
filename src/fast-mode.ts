@@ -70,7 +70,7 @@ export class FastModeController {
 		this.reported = this.overlapping ? "unattributed" : "pending";
 	}
 
-	transform(payload: unknown, model: FastModel | undefined, oauth: boolean): unknown {
+	transform(payload: unknown, model: FastModel | undefined, oauth: boolean, capability: FastCapability = this.capability): unknown {
 		const body = fastRecord(payload);
 		if (!isCodexSubscription(model, oauth) || body?.model !== model?.id
 			|| !Array.isArray(body?.input)) return undefined;
@@ -80,7 +80,7 @@ export class FastModeController {
 		this.request = { model: model!.id };
 		this.phase = this.overlapping ? "unknown" : "requested";
 		this.reported = this.overlapping ? "unattributed" : "pending";
-		return { ...body, service_tier: this.enabled && this.capability.kind === "supported" ? "priority" : "default" };
+		return { ...body, service_tier: this.enabled && capability.kind === "supported" ? "priority" : "default" };
 	}
 
 	observe(event: { provider: string; api: string; model: string; data: unknown }): void {
