@@ -1,6 +1,6 @@
 # pi-codex
 
-[简体中文](README.md) | [English](docs/README.en.md)
+[简体中文](README.md) | [English](README.en.md)
 
 > 一个 [pi](https://pi.dev) 扩展：在页脚 HUD 显示 **Codex 剩余额度与重置倒计时**，详情含套餐、重置时间与重置卡明细，支持**仅当前会话的 Fast 模式**，复用 pi 的 `openai-codex` OAuth 登录。
 
@@ -162,33 +162,26 @@ pi --offline -ne -e . --help
 
 ```text
 pi-codex/
-├── README.md                      # 中文使用说明与文档入口
-├── docs/
-│   ├── README.en.md               # 英文使用说明
-│   ├── CHANGELOG.md               # 中文更新日志
-│   └── CHANGELOG.en.md            # 英文更新日志
-├── extensions/
-│   └── index.ts                   # pi 入口、HUD、命令与浮层
-├── src/
-│   ├── quota.ts                   # 额度解析、请求和状态机
-│   ├── fast-mode.ts               # 会话内 Fast 与服务端档位状态
-│   ├── fast-catalog.ts            # 官方模型目录、能力缓存与退避
-│   └── fast-provider.ts           # 原生 provider 适配与请求凭据绑定
-├── scripts/
-│   └── sync-autoload.ts           # 显式生成 pi 单文件扩展
-├── tests/
-│   ├── pi-codex.test.ts           # 额度解析、请求与状态机
-│   ├── fast-mode.test.ts          # 会话内 Fast 与服务端档位
-│   ├── fast-provider.test.ts      # 原生选项、认证绑定与并发请求
-│   ├── catalog.test.ts            # 模型目录、缓存与退避
-│   ├── extension.test.ts          # 命令、会话、模型切换与界面
-│   ├── transport.test.ts          # HTTP/WebSocket 序列化
-│   ├── host.test.ts               # Pi SDK 全链路集成
-│   ├── deployment.test.ts         # 真实宿主加载单文件扩展
-│   └── sync-autoload.test.ts      # 临时目录中的同步脚本验证
-├── package.json                   # 包清单、命令与依赖
-├── package-lock.json              # 开发依赖锁定
-├── tsconfig.json                  # 严格类型检查，不生成 JS
+├── extensions/index.ts             # pi 入口、HUD、命令与浮层
+├── src/quota.ts                    # 可离线测试的解析、请求和状态机
+├── src/fast-mode.ts                # 会话内 Fast 与服务端档位状态
+├── src/fast-catalog.ts             # 官方模型目录、能力缓存与退避
+├── src/fast-provider.ts            # 原生 provider 适配与请求凭据绑定
+├── tests/pi-codex.test.ts          # 额度解析、请求与状态机测试
+├── tests/fast-mode.test.ts         # 会话内 Fast 与服务端档位测试
+├── tests/fast-provider.test.ts     # 原生选项、认证绑定与并发请求测试
+├── tests/catalog.test.ts           # 模型目录、缓存与退避测试
+├── tests/extension.test.ts         # 命令、会话与模型切换集成验证
+├── tests/transport.test.ts         # 真实宿主 HTTP/WebSocket 序列化的离线验证
+├── tests/host.test.ts              # Pi SDK 全链路（createAgentSession + ExtensionRunner）
+├── tests/deployment.test.ts        # 真实宿主加载生成的单文件扩展
+├── tests/sync-autoload.test.ts     # 临时目录中的同步脚本测试
+├── scripts/sync-autoload.ts        # 显式同步 pi 自加载副本
+├── tsconfig.json                   # 只做类型检查，不生成 JS
+├── package-lock.json               # 开发依赖锁定
+├── package.json
+├── README.md
+├── README.en.md
 ├── .gitignore
 └── LICENSE
 ```
@@ -197,7 +190,7 @@ Pi 通过清单只加载入口文件；`src/` 同时包含在发布文件中，�
 
 ## 版本更新
 
-当前版本 **v0.4.5**。完整更新记录见 [更新日志](docs/CHANGELOG.md)。
+当前版本 **v0.4.5**。完整更新记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 许可
 

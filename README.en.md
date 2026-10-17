@@ -1,6 +1,6 @@
 # pi-codex
 
-[简体中文](../README.md) | [English](README.en.md)
+[简体中文](README.md) | [English](README.en.md)
 
 > A [pi](https://pi.dev) extension that shows **remaining Codex subscription quota and reset countdowns** in the footer HUD, with plan, reset times, and reset-credit details, plus **session-local Fast mode**. It reuses pi's `openai-codex` OAuth login.
 
@@ -162,33 +162,26 @@ pi --offline -ne -e . --help
 
 ```text
 pi-codex/
-├── README.md                      # Chinese guide and documentation entry
-├── docs/
-│   ├── README.en.md               # English guide
-│   ├── CHANGELOG.md               # Chinese changelog
-│   └── CHANGELOG.en.md            # English changelog
-├── extensions/
-│   └── index.ts                   # pi entry point, HUD, commands, and overlay
-├── src/
-│   ├── quota.ts                   # quota parsing, requests, and state machine
-│   ├── fast-mode.ts               # session-local Fast and server-tier state
-│   ├── fast-catalog.ts            # official model catalog, cache, and backoff
-│   └── fast-provider.ts           # native provider adapter and request-auth binding
-├── scripts/
-│   └── sync-autoload.ts           # explicitly generates the standalone extension
-├── tests/
-│   ├── pi-codex.test.ts           # quota parsing, requests, and state machine
-│   ├── fast-mode.test.ts          # session-local Fast and server tiers
-│   ├── fast-provider.test.ts      # native options, auth binding, and concurrency
-│   ├── catalog.test.ts            # model catalog, cache, and backoff
-│   ├── extension.test.ts          # commands, sessions, model switching, and UI
-│   ├── transport.test.ts          # HTTP/WebSocket serialization
-│   ├── host.test.ts               # full-pipeline Pi SDK integration
-│   ├── deployment.test.ts         # standalone extension loaded by the real host
-│   └── sync-autoload.test.ts      # synchronization checks in temporary directories
-├── package.json                   # package manifest, commands, and dependencies
-├── package-lock.json              # locked development dependencies
-├── tsconfig.json                  # strict type checking without JS output
+├── extensions/index.ts             # pi entry point, HUD, command, and overlay
+├── src/quota.ts                    # parsing, requests, and state machine tested offline
+├── src/fast-mode.ts                # session-local Fast and server-tier state
+├── src/fast-catalog.ts             # official model catalog, capability cache, and backoff
+├── src/fast-provider.ts            # native provider adapter and request-auth binding
+├── tests/pi-codex.test.ts          # quota parsing, requests, and state machine
+├── tests/fast-mode.test.ts         # session-local Fast and server tiers
+├── tests/fast-provider.test.ts     # native options, auth binding, and concurrent requests
+├── tests/catalog.test.ts           # model catalog, cache, and backoff
+├── tests/extension.test.ts         # commands, sessions, and model-switch integration
+├── tests/transport.test.ts         # offline host HTTP/WebSocket serializer checks
+├── tests/host.test.ts              # full-pipeline Pi SDK checks (createAgentSession + ExtensionRunner)
+├── tests/deployment.test.ts        # generated extension loaded through the real host
+├── tests/sync-autoload.test.ts     # synchronization tests in temporary directories
+├── scripts/sync-autoload.ts        # explicitly synchronizes the pi autoload copy
+├── tsconfig.json                   # type checking only; no JavaScript output
+├── package-lock.json               # locked development dependencies
+├── package.json
+├── README.md
+├── README.en.md
 ├── .gitignore
 └── LICENSE
 ```
@@ -197,8 +190,8 @@ pi loads only the manifest's entry point; `src/` is included in the distributed 
 
 ## Version history
 
-Current version **v0.4.5**. See the [changelog](CHANGELOG.en.md) for the full history.
+Current version **v0.4.5**. See [CHANGELOG.md](CHANGELOG.en.md) for the full history.
 
 ## License
 
-[MIT](../LICENSE).
+[MIT](./LICENSE).

@@ -3,11 +3,6 @@
 All notable changes to this project are documented in this file.
 Versions follow [Semantic Versioning](https://semver.org/); dates are release dates.
 
-## [Unreleased]
-
-### Changed
-- Grouped the English guide and bilingual changelogs under `docs/`, keeping the Chinese README at the repository root; updated document links, project structure, and the package allowlist without changing extension behavior.
-
 ## [0.4.5] - 2026-10-16
 
 ### Changed
